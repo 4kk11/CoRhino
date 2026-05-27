@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net7.0</TargetFramework>
+    <AssemblyName>RhinoClaudePanel</AssemblyName>
+    <OutputType>Library</OutputType>
+    <TargetExt>.rhp</TargetExt>
+    <RootNamespace>RhinoClaudePanel</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <Version>0.0.1</Version>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <RhinoResources>/Applications/Rhino 8.app/Contents/Frameworks/RhCore.framework/Versions/A/Resources</RhinoResources>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="RhinoCommon">
+      <HintPath>$(RhinoResources)/RhinoCommon.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Eto">
+      <HintPath>$(RhinoResources)/Eto.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Rhino.UI">
+      <HintPath>$(RhinoResources)/Rhino.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Porta.Pty" Version="1.0.7" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\Panel\index.html" />
+    <EmbeddedResource Include="..\icon.png" LogicalName="RhinoClaudePanel.icon.png" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <PluginDestDir>$(HOME)/Library/Application Support/McNeel/Rhinoceros/8.0/MacPlugIns/RhinoClaudePanel</PluginDestDir>
+  </PropertyGroup>
+
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent">
+    <ItemGroup>
+      <PluginFiles Include="$(TargetDir)**\*.*" />
+    </ItemGroup>
+    <RemoveDir Directories="$(PluginDestDir)" />
+    <MakeDir Directories="$(PluginDestDir)" />
+    <Copy SourceFiles="@(PluginFiles)" DestinationFiles="@(PluginFiles->'$(PluginDestDir)\%(RecursiveDir)%(Filename)%(Extension)')" />
+    <Message Text="RhinoClaudePanel installed to $(PluginDestDir)" Importance="high" />
+  </Target>
+</Project>

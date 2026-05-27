@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Claude</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body { margin: 0; padding: 0; height: 100%; background: #111; color: #ddd;
+        font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+      #out { white-space: pre-wrap; padding: 8px; height: calc(100% - 48px);
+        overflow: auto; box-sizing: border-box; }
+      #in { width: 100%; padding: 8px; box-sizing: border-box; background: #1a1a1a;
+        border: none; border-top: 1px solid #333; color: #ddd;
+        font-family: inherit; font-size: 12px; height: 48px; outline: none; }
+    </style>
+  </head>
+  <body>
+    <pre id="out"></pre>
+    <input id="in" autofocus placeholder="type here, Enter to send..." />
+    <script>
+      const out = document.getElementById("out");
+      const inp = document.getElementById("in");
+
+      function post(msg) {
+        try {
+          if (!window.eto) {
+            console.error("[Claude] window.eto is missing - cannot post", msg);
+            return;
+          }
+          window.eto.postMessage(JSON.stringify(msg));
+        } catch (e) { console.error(e); }
+      }
+      console.log("[Claude] index.html loaded. window.eto =", typeof window.eto);
+
+      window.ClaudePanel = {
+        onPtyData(text) {
+          out.textContent += text;
+          out.scrollTop = out.scrollHeight;
+        },
+      };
+
+      inp.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          const v = inp.value + "\n";
+          inp.value = "";
+          post({ type: "stdin", data: v });
+        } else if (ev.key === "Tab") {
+          ev.preventDefault();
+          post({ type: "stdin", data: "\t" });
+        } else if (ev.ctrlKey && ev.key === "c") {
+          ev.preventDefault();
+          post({ type: "stdin", data: "\x03" });
+        }
+      });
+
+      post({ type: "ready" });
+    </script>
+  </body>
+</html>
