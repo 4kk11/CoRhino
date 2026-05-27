@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net7.0</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>RhinoClaudePanel</AssemblyName>
     <OutputType>Library</OutputType>
     <TargetExt>.rhp</TargetExt>
@@ -29,6 +29,10 @@
       <HintPath>$(RhinoResources)/Rhino.UI.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="Microsoft.macOS">
+      <HintPath>$(RhinoResources)/Microsoft.macOS.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>
@@ -36,7 +40,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Resources\Panel\index.html" />
     <EmbeddedResource Include="..\icon.png" LogicalName="RhinoClaudePanel.icon.png" />
   </ItemGroup>
 
@@ -44,7 +47,16 @@
     <PluginDestDir>$(HOME)/Library/Application Support/McNeel/Rhinoceros/8.0/MacPlugIns/RhinoClaudePanel</PluginDestDir>
   </PropertyGroup>
 
-  <Target Name="PostBuild" AfterTargets="PostBuildEvent">
+  <!-- Flatten native libs to TargetDir root so dlopen finds them via the plugin assembly dir. -->
+  <Target Name="FlattenNativeLibs" AfterTargets="Build">
+    <ItemGroup>
+      <NativeLib Include="$(TargetDir)runtimes/osx-arm64/native/*.dylib" />
+      <NativeLib Include="$(TargetDir)runtimes/osx-x64/native/*.dylib" />
+    </ItemGroup>
+    <Copy SourceFiles="@(NativeLib)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent" DependsOnTargets="FlattenNativeLibs">
     <ItemGroup>
       <PluginFiles Include="$(TargetDir)**\*.*" />
     </ItemGroup>

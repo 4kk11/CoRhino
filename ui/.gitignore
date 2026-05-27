@@ -1,0 +1,7 @@
+# Build output
+dist/
+
+# TypeScript build artifacts (we only commit .ts; .js next to .ts is compiled output)
+src/**/*.js
+vite.config.js
+tsconfig.tsbuildinfo

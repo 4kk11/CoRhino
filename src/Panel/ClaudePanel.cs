@@ -17,6 +17,7 @@ namespace RhinoClaudePanel.Panel
         readonly PtySession _session = new();
         readonly System.Collections.Generic.Queue<string> _pendingOutput = new();
         bool _webReady;
+        string? _currentCwd;
 
         static readonly JsonSerializerOptions JsonOptions = new()
         {
@@ -36,25 +37,28 @@ namespace RhinoClaudePanel.Panel
             }
             catch (Exception ex)
             {
-                RhinoApp.WriteLine($"[Claude] Inspector enable failed: {ex.Message}");
+                Log.Write($"[Claude] Inspector enable failed: {ex.Message}");
             }
 #endif
 
             _session.DataReceived += OnPtyData;
             _session.Exited += code =>
-                RhinoApp.WriteLine($"[Claude] PTY exited with code {code}");
+                Log.Write($"[Claude] PTY exited with code {code}");
+
+            RhinoDoc.EndOpenDocument += OnDocChanged;
+            RhinoDoc.NewDocument += OnDocChanged;
 
             Content = _webView;
             LoadWebView();
 
-            RhinoApp.WriteLine("[Claude] Scheduling StartSession on background thread...");
+            Log.Write("[Claude] Scheduling StartSession on background thread...");
             System.Threading.Tasks.Task.Run(async () =>
             {
                 try { await StartSession().ConfigureAwait(false); }
                 catch (Exception ex)
                 {
-                    RhinoApp.WriteLine($"[Claude] StartSession unhandled: {ex.GetType().Name}: {ex.Message}");
-                    RhinoApp.WriteLine($"[Claude] Stack: {ex.StackTrace}");
+                    Log.Write($"[Claude] StartSession unhandled: {ex.GetType().Name}: {ex.Message}");
+                    Log.Write($"[Claude] Stack: {ex.StackTrace}");
                 }
             });
         }
@@ -63,42 +67,84 @@ namespace RhinoClaudePanel.Panel
         {
             var devUrl = Environment.GetEnvironmentVariable("RHINOCLAUDE_WEBUI_URL");
             if (devUrl != null)
+            {
                 _webView.Url = new Uri(devUrl);
-            else
-                _webView.LoadHtml(LoadEmbeddedHtml());
-        }
+                return;
+            }
 
-        static string LoadEmbeddedHtml()
-        {
-            var assembly = typeof(ClaudePanel).Assembly;
-            var resourceName = assembly
-                .GetManifestResourceNames()
-                .SingleOrDefault(n => n.EndsWith("Resources.Panel.index.html", StringComparison.Ordinal));
-            if (resourceName == null)
-                throw new InvalidOperationException("RhinoClaudePanel HTML resource not found.");
-            using var stream = assembly.GetManifestResourceStream(resourceName)
-                ?? throw new InvalidOperationException($"Cannot open resource '{resourceName}'.");
-            using var reader = new StreamReader(stream);
-            return reader.ReadToEnd();
+            var pluginDir = Path.GetDirectoryName(typeof(ClaudePanel).Assembly.Location)
+                ?? throw new InvalidOperationException("Cannot resolve plugin directory.");
+            var indexPath = Path.Combine(pluginDir, "web", "index.html");
+            if (!File.Exists(indexPath))
+            {
+                Log.Write($"[Claude] web/index.html not found at {indexPath}");
+                return;
+            }
+            var html = File.ReadAllText(indexPath);
+            _webView.LoadHtml(html);
+            Log.Write($"[Claude] LoadHtml invoked, html length={html.Length}");
         }
 
         async System.Threading.Tasks.Task StartSession()
         {
-            RhinoApp.WriteLine("[Claude] StartSession() entered.");
+            Log.Write("[Claude] StartSession() entered.");
             try
             {
+                var (claudePath, loginPath) = CliResolver.Resolve();
                 var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                RhinoApp.WriteLine($"[Claude] About to spawn /bin/bash in {home}");
-                await _session.StartAsync("/bin/bash", new[] { "-l" }, home).ConfigureAwait(false);
-                RhinoApp.WriteLine("[Claude] bash spawned.");
+                _currentCwd = ResolveCwd(home);
+
+                var env = new System.Collections.Generic.Dictionary<string, string>();
+                if (!string.IsNullOrEmpty(loginPath)) env["PATH"] = loginPath!;
+
+                if (string.IsNullOrEmpty(claudePath))
+                {
+                    Log.Write("[Claude] `claude` CLI not found on PATH. Falling back to bash. PATH=" + (loginPath ?? "<none>"));
+                    await _session.StartAsync("/bin/bash", new[] { "-l" }, _currentCwd, env).ConfigureAwait(false);
+                    Log.Write($"[Claude] bash spawned in {_currentCwd}");
+                }
+                else
+                {
+                    Log.Write($"[Claude] Spawning {claudePath} in {_currentCwd}");
+                    await _session.StartAsync(claudePath!, Array.Empty<string>(), _currentCwd, env).ConfigureAwait(false);
+                    Log.Write($"[Claude] claude spawned in {_currentCwd}");
+                }
             }
             catch (Exception ex)
             {
-                RhinoApp.WriteLine($"[Claude] PTY start failed: {ex.GetType().Name}: {ex.Message}");
-                RhinoApp.WriteLine($"[Claude] Stack: {ex.StackTrace}");
+                Log.Write($"[Claude] PTY start failed: {ex.GetType().Name}: {ex.Message}");
+                Log.Write($"[Claude] Stack: {ex.StackTrace}");
                 if (ex.InnerException != null)
-                    RhinoApp.WriteLine($"[Claude] Inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
+                    Log.Write($"[Claude] Inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
             }
+        }
+
+        static string ResolveCwd(string home)
+        {
+            try
+            {
+                var docPath = Rhino.RhinoDoc.ActiveDoc?.Path;
+                if (!string.IsNullOrEmpty(docPath))
+                {
+                    var dir = Path.GetDirectoryName(docPath);
+                    if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                        return dir!;
+                }
+            }
+            catch { }
+            return home;
+        }
+
+        void OnDocChanged(object? sender, Rhino.DocumentEventArgs e)
+        {
+            if (!_session.IsRunning) return;
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var newCwd = ResolveCwd(home);
+            if (newCwd == _currentCwd) return;
+            Log.Write($"[Claude] doc changed; sending `cd` to update cwd: {newCwd}");
+            // Send a cd line to the live shell/claude. The CLI shows it as a typed command.
+            _session.Write(Encoding.UTF8.GetBytes($"cd \"{newCwd.Replace("\"", "\\\"")}\"\n"));
+            _currentCwd = newCwd;
         }
 
         void OnMessageReceived(object? sender, WebViewMessageEventArgs e)
@@ -113,7 +159,7 @@ namespace RhinoClaudePanel.Panel
                 {
                     case "ready":
                         _webReady = true;
-                        RhinoApp.WriteLine("[Claude] WebView ready.");
+                        Log.Write("[Claude] WebView ready.");
                         FlushPending();
                         break;
 
@@ -125,11 +171,26 @@ namespace RhinoClaudePanel.Panel
                                 _session.Write(Encoding.UTF8.GetBytes(s));
                         }
                         break;
+
+                    case "resize":
+                        if (root.TryGetProperty("cols", out var colsEl) &&
+                            root.TryGetProperty("rows", out var rowsEl))
+                        {
+                            _session.Resize(colsEl.GetInt32(), rowsEl.GetInt32());
+                        }
+                        break;
+
+                    case "debug":
+                        if (root.TryGetProperty("message", out var msgEl))
+                        {
+                            Log.Write($"[Claude/UI] {msgEl.GetString()}");
+                        }
+                        break;
                 }
             }
             catch (JsonException ex)
             {
-                RhinoApp.WriteLine($"[Claude] WebView JSON parse error: {ex.Message}");
+                Log.Write($"[Claude] WebView JSON parse error: {ex.Message}");
             }
         }
 
@@ -162,6 +223,8 @@ namespace RhinoClaudePanel.Panel
         {
             if (disposing)
             {
+                RhinoDoc.EndOpenDocument -= OnDocChanged;
+                RhinoDoc.NewDocument -= OnDocChanged;
                 _session.Dispose();
             }
             base.Dispose(disposing);

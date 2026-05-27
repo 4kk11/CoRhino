@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Porta.Pty;
 using Rhino;
+using RhinoClaudePanel;
 
 namespace RhinoClaudePanel.Pty
 {
@@ -19,12 +20,12 @@ namespace RhinoClaudePanel.Pty
 
         public bool IsRunning => _connection != null;
 
-        public async Task StartAsync(string app, string[] args, string cwd, IDictionary<string, string>? env = null, int cols = 80, int rows = 24)
+        public async Task StartAsync(string app, IReadOnlyList<string> args, string cwd, IDictionary<string, string>? env = null, int cols = 80, int rows = 24)
         {
             if (_connection != null)
                 throw new InvalidOperationException("PtySession already started.");
 
-            RhinoApp.WriteLine("[Claude/PTY] Preparing environment (minimal allow-list)...");
+            Log.Write("[Claude/PTY] Preparing environment (minimal allow-list)...");
             var environment = new Dictionary<string, string>();
             var allowList = new[] { "HOME", "USER", "LOGNAME", "PATH", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR" };
             foreach (var key in allowList)
@@ -35,7 +36,7 @@ namespace RhinoClaudePanel.Pty
             if (env != null)
                 foreach (var kv in env) environment[kv.Key] = kv.Value;
             environment["TERM"] = environment.TryGetValue("TERM", out var t) ? t : "xterm-256color";
-            RhinoApp.WriteLine($"[Claude/PTY] env keys: {string.Join(",", environment.Keys)}");
+            Log.Write($"[Claude/PTY] env keys: {string.Join(",", environment.Keys)}");
 
             var options = new PtyOptions
             {
@@ -44,13 +45,13 @@ namespace RhinoClaudePanel.Pty
                 Rows = rows,
                 Cwd = cwd,
                 App = app,
-                CommandLine = args,
+                CommandLine = args is string[] arr ? arr : System.Linq.Enumerable.ToArray(args),
                 Environment = environment,
             };
 
-            RhinoApp.WriteLine($"[Claude/PTY] Calling PtyProvider.SpawnAsync app={app} cwd={cwd} cols={cols} rows={rows}");
+            Log.Write($"[Claude/PTY] Calling PtyProvider.SpawnAsync app={app} cwd={cwd} cols={cols} rows={rows}");
             _connection = await PtyProvider.SpawnAsync(options, CancellationToken.None).ConfigureAwait(false);
-            RhinoApp.WriteLine($"[Claude/PTY] SpawnAsync returned. pid={_connection?.Pid}");
+            Log.Write($"[Claude/PTY] SpawnAsync returned. pid={_connection?.Pid}");
             _connection.ProcessExited += (_, e) =>
             {
                 Exited?.Invoke(e.ExitCode);
@@ -78,7 +79,7 @@ namespace RhinoClaudePanel.Pty
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                RhinoApp.WriteLine($"[Claude] PTY read error: {ex.Message}");
+                Log.Write($"[Claude] PTY read error: {ex.Message}");
             }
         }
 
