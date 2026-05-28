@@ -6,7 +6,7 @@ namespace RhinoClaudePanel
 {
     internal static class Log
     {
-        static readonly string LogPath = "/tmp/RhinoClaudePanel.log";
+        static readonly string LogPath = Path.Combine(Path.GetTempPath(), "RhinoClaudePanel.log");
 
         static readonly object Gate = new();
 

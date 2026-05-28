@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Eto.Forms;
@@ -97,16 +98,27 @@ namespace RhinoClaudePanel.Panel
                 var env = new System.Collections.Generic.Dictionary<string, string>();
                 if (!string.IsNullOrEmpty(loginPath)) env["PATH"] = loginPath!;
 
+                var isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
                 if (string.IsNullOrEmpty(claudePath))
                 {
-                    Log.Write("[Claude] `claude` CLI not found on PATH. Falling back to bash. PATH=" + (loginPath ?? "<none>"));
-                    await _session.StartAsync("/bin/bash", new[] { "-l" }, _currentCwd, env).ConfigureAwait(false);
-                    Log.Write($"[Claude] bash spawned in {_currentCwd}");
+                    var fallbackApp = isWindows ? "cmd.exe" : "/bin/bash";
+                    var fallbackArgs = isWindows ? Array.Empty<string>() : new[] { "-l" };
+                    Log.Write($"[Claude] `claude` CLI not found on PATH. Falling back to {fallbackApp}. PATH=" + (loginPath ?? "<none>"));
+                    await _session.StartAsync(fallbackApp, fallbackArgs, _currentCwd, env).ConfigureAwait(false);
+                    Log.Write($"[Claude] {fallbackApp} spawned in {_currentCwd}");
                 }
                 else
                 {
                     Log.Write($"[Claude] Spawning {claudePath} in {_currentCwd}");
-                    await _session.StartAsync(claudePath!, Array.Empty<string>(), _currentCwd, env).ConfigureAwait(false);
+                    if (isWindows && claudePath!.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // .cmd/.bat cannot be launched directly by CreateProcess — go through cmd.exe.
+                        await _session.StartAsync("cmd.exe", new[] { "/c", claudePath! }, _currentCwd, env).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await _session.StartAsync(claudePath!, Array.Empty<string>(), _currentCwd, env).ConfigureAwait(false);
+                    }
                     Log.Write($"[Claude] claude spawned in {_currentCwd}");
                 }
             }
