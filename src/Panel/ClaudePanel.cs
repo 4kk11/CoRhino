@@ -110,9 +110,10 @@ namespace RhinoClaudePanel.Panel
                 else
                 {
                     Log.Write($"[Claude] Spawning {claudePath} in {_currentCwd}");
-                    if (isWindows && claudePath!.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
+                    if (isWindows && !claudePath!.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
                     {
-                        // .cmd/.bat cannot be launched directly by CreateProcess — go through cmd.exe.
+                        // Only .exe can be launched directly by CreateProcess on Windows.
+                        // .cmd / .bat / extensionless shell-shims (npm, fnm) must go through cmd.exe.
                         await _session.StartAsync("cmd.exe", new[] { "/c", claudePath! }, _currentCwd, env).ConfigureAwait(false);
                     }
                     else

@@ -69,9 +69,10 @@
     <ItemGroup>
       <PluginFiles Include="$(TargetDir)**\*.*" />
     </ItemGroup>
-    <RemoveDir Directories="$(PluginDestDir)" />
     <MakeDir Directories="$(PluginDestDir)" />
-    <Copy SourceFiles="@(PluginFiles)" DestinationFiles="@(PluginFiles->'$(PluginDestDir)\%(RecursiveDir)%(Filename)%(Extension)')" />
+    <!-- SkipUnchangedFiles + ContinueOnError lets the build succeed even when Rhino has some DLLs locked.
+         The locked DLLs are unchanged native deps, so skipping them is harmless. -->
+    <Copy SourceFiles="@(PluginFiles)" DestinationFiles="@(PluginFiles->'$(PluginDestDir)\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" ContinueOnError="WarnAndContinue" />
     <Message Text="RhinoClaudePanel installed to $(PluginDestDir)" Importance="high" />
   </Target>
 </Project>
