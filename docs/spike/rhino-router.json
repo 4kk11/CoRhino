@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "rhino": {
+      "command": "/Users/akihito/Library/Application Support/McNeel/Rhinoceros/packages/8.0/Rhino-MCP-Platform/0.1.3/router/osx-arm64/rhino-mcp-router",
+      "args": ["--default-version", "8", "--startup-timeout", "120"]
+    }
+  }
+}
