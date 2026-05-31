@@ -119,8 +119,32 @@ Phase 0 のスパイク（S1/S3）は未実機検証だが、direct-HTTP(D1) 前
   `--strict-mcp-config` でユーザーのグローバル/プロジェクト MCP を排除し、`rhino`
   （http://localhost:10500/）だけをロードする。
 
-### 残（Phase 0 検証が前提）
+### Phase 0 / Phase 1 実機検証結果（2026-05-31, 実機 pass）
 
-- S1/S3 の実機検証（U1 名前空間束縛・U3/U4 precedence）は未消化。cc-plugin の
-  agents を載せるか（`--plugin-dir`）はここで確定後に 1b へ追記する。
+ローカル Debug ビルドの Rhino-MCP-Platform をロードした Rhino 8（Apple Silicon）で検証。
+
+- **S1 direct-HTTP（U1/U2）= pass**: 生成済み WS の `.mcp.json` で
+  `claude -p --strict-mcp-config --mcp-config .mcp.json` を headless 実行。
+  - READ: 「current Rhino doc のオブジェクト列挙」→ 箱（Extrusion）1個を正しく報告。
+  - WRITE: 「半径5の球を追加」→ 追加成功。rhino-cli 側から `["Brep","Extrusion"]` を独立確認。
+  - ツール名前空間 = **`mcp__rhino__*`**（plugin 版 `mcp__plugin_...` ではない）。U1 OK。
+  - `--strict-mcp-config` でユーザーのグローバル MCP を排除できることも確認。
+- **1a ホスト MCP 自動起動 = pass**: パネル構築で `MCPStart 10500` 発火→
+  `curl localhost:10500 tools/list` が rhino tools を返す（"host MCP up"）。
+- **1b パネル内 claude 起動 = pass**: パネルを開くと cwd=WS で claude が spawn（pid 取得）、
+  `execute-panel-js` で xterm バッファを読むと claude Code TUI が WS で稼働中と確認。
+
+### 検証中に直したバグ
+
+- **B1 MCPStart のコマンドネスト失敗**: パネルが `RhinoClaude` コマンド経由で構築されると
+  コンストラクタ内の同期 `RhinoApp.RunScript("_-MCPStart")` が入れ子になり失敗。
+  → `RhinoApp.Idle` ワンショットに遅延させ top-level 実行に修正（ClaudePanel.cs）。
+- **B2 libporta_pty.dylib のアーキ不一致**: `FlattenNativeLibs` が osx-arm64/osx-x64 を
+  同名フラット化し x64 が勝ち、arm64 Rhino で dlopen 失敗→PTY 起動不可だった。
+  → `lipo -create` でユニバーサルバイナリ化（csproj）。両 arch で load 可能に。
+
+### 残（後続フェーズ）
+
+- S3（cc-plugin の agents/commands を `--plugin-dir` で載せ http rhino に束縛できるか）は
+  MVP では未着手。agents 無しの素のツール直叩きで E2E は成立済み。
 - ポート競合フォールバック（Phase 3）、未導入時の yak 自動 install（Phase 2）。
