@@ -203,13 +203,7 @@ namespace RhinoClaudePanel.Panel
                         {
                             var s = dataEl.GetString();
                             if (s != null)
-                            {
-                                // TEMP diagnostic: confirms whether keystrokes are lost
-                                // before reaching C# (xterm/WebKit) or after. Type "rhino"
-                                // fast — if the log shows "rhn", the loss is upstream.
-                                Log.Write($"[Claude/stdin] {JsonSerializer.Serialize(s)} len={s.Length}");
                                 _session.Write(Encoding.UTF8.GetBytes(s));
-                            }
                         }
                         break;
 
