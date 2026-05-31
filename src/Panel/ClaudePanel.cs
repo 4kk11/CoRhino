@@ -18,7 +18,6 @@ namespace RhinoClaudePanel.Panel
         readonly PtySession _session = new();
         readonly System.Collections.Generic.Queue<string> _pendingOutput = new();
         bool _webReady;
-        string? _currentCwd;
 
         static readonly JsonSerializerOptions JsonOptions = new()
         {
@@ -46,8 +45,12 @@ namespace RhinoClaudePanel.Panel
             _session.Exited += code =>
                 Log.Write($"[Claude] PTY exited with code {code}");
 
-            RhinoDoc.EndOpenDocument += OnDocChanged;
-            RhinoDoc.NewDocument += OnDocChanged;
+            // Start the in-process RhinoMCP HTTP host in *this* Rhino, and keep it
+            // bound to the active document. The host is per-doc, so re-fire on
+            // open/new. claude connects to it via the workspace .mcp.json.
+            EnsureHostMcpStarted();
+            RhinoDoc.EndOpenDocument += OnDocChangedRestartHost;
+            RhinoDoc.NewDocument += OnDocChangedRestartHost;
 
             Content = _webView;
             LoadWebView();
@@ -92,11 +95,19 @@ namespace RhinoClaudePanel.Panel
             try
             {
                 var (claudePath, loginPath) = CliResolver.Resolve();
-                var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                _currentCwd = ResolveCwd(home);
+                var cwd = Workspace.EnsureInitialized();
 
                 var env = new System.Collections.Generic.Dictionary<string, string>();
                 if (!string.IsNullOrEmpty(loginPath)) env["PATH"] = loginPath!;
+
+                // Load ONLY the workspace's RhinoMCP config and ignore the user's
+                // global/project MCP settings, so every session sees the same
+                // single `rhino` server regardless of where claude is invoked.
+                var claudeArgs = new[]
+                {
+                    "--strict-mcp-config",
+                    "--mcp-config", Workspace.McpConfigPath,
+                };
 
                 var isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
                 if (string.IsNullOrEmpty(claudePath))
@@ -104,23 +115,23 @@ namespace RhinoClaudePanel.Panel
                     var fallbackApp = isWindows ? "cmd.exe" : "/bin/bash";
                     var fallbackArgs = isWindows ? Array.Empty<string>() : new[] { "-l" };
                     Log.Write($"[Claude] `claude` CLI not found on PATH. Falling back to {fallbackApp}. PATH=" + (loginPath ?? "<none>"));
-                    await _session.StartAsync(fallbackApp, fallbackArgs, _currentCwd, env).ConfigureAwait(false);
-                    Log.Write($"[Claude] {fallbackApp} spawned in {_currentCwd}");
+                    await _session.StartAsync(fallbackApp, fallbackArgs, cwd, env).ConfigureAwait(false);
+                    Log.Write($"[Claude] {fallbackApp} spawned in {cwd}");
                 }
                 else
                 {
-                    Log.Write($"[Claude] Spawning {claudePath} in {_currentCwd}");
+                    Log.Write($"[Claude] Spawning {claudePath} in {cwd}");
                     if (isWindows && !claudePath!.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
                     {
                         // Only .exe can be launched directly by CreateProcess on Windows.
                         // .cmd / .bat / extensionless shell-shims (npm, fnm) must go through cmd.exe.
-                        await _session.StartAsync("cmd.exe", new[] { "/c", claudePath! }, _currentCwd, env).ConfigureAwait(false);
+                        await _session.StartAsync("cmd.exe", new[] { "/c", claudePath! }.Concat(claudeArgs).ToArray(), cwd, env).ConfigureAwait(false);
                     }
                     else
                     {
-                        await _session.StartAsync(claudePath!, Array.Empty<string>(), _currentCwd, env).ConfigureAwait(false);
+                        await _session.StartAsync(claudePath!, claudeArgs, cwd, env).ConfigureAwait(false);
                     }
-                    Log.Write($"[Claude] claude spawned in {_currentCwd}");
+                    Log.Write($"[Claude] claude spawned in {cwd}");
                 }
             }
             catch (Exception ex)
@@ -132,33 +143,27 @@ namespace RhinoClaudePanel.Panel
             }
         }
 
-        static string ResolveCwd(string home)
+        static void EnsureHostMcpStarted()
         {
+            // MCPStart prompts for a port; the `-` dash form feeds it from script.
+            // StartOrRestart semantics make re-firing on each doc safe. If the
+            // RhinoMCP plugin isn't installed the command is unknown → RunScript
+            // returns false; we log and move on (onboarding handles install).
             try
             {
-                var docPath = Rhino.RhinoDoc.ActiveDoc?.Path;
-                if (!string.IsNullOrEmpty(docPath))
-                {
-                    var dir = Path.GetDirectoryName(docPath);
-                    if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
-                        return dir!;
-                }
+                var ok = RhinoApp.RunScript($"_-MCPStart {Workspace.HostPort}\n", false);
+                Log.Write(ok
+                    ? $"[Claude] MCPStart {Workspace.HostPort} fired (host MCP up)."
+                    : $"[Claude] MCPStart failed (Rhino-MCP-Platform not installed?).");
             }
-            catch { }
-            return home;
+            catch (Exception ex)
+            {
+                Log.Write($"[Claude] MCPStart threw: {ex.GetType().Name}: {ex.Message}");
+            }
         }
 
-        void OnDocChanged(object? sender, Rhino.DocumentEventArgs e)
-        {
-            if (!_session.IsRunning) return;
-            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            var newCwd = ResolveCwd(home);
-            if (newCwd == _currentCwd) return;
-            Log.Write($"[Claude] doc changed; sending `cd` to update cwd: {newCwd}");
-            // Send a cd line to the live shell/claude. The CLI shows it as a typed command.
-            _session.Write(Encoding.UTF8.GetBytes($"cd \"{newCwd.Replace("\"", "\\\"")}\"\n"));
-            _currentCwd = newCwd;
-        }
+        void OnDocChangedRestartHost(object? sender, Rhino.DocumentEventArgs e)
+            => EnsureHostMcpStarted();
 
         void OnMessageReceived(object? sender, WebViewMessageEventArgs e)
         {
@@ -236,8 +241,8 @@ namespace RhinoClaudePanel.Panel
         {
             if (disposing)
             {
-                RhinoDoc.EndOpenDocument -= OnDocChanged;
-                RhinoDoc.NewDocument -= OnDocChanged;
+                RhinoDoc.EndOpenDocument -= OnDocChangedRestartHost;
+                RhinoDoc.NewDocument -= OnDocChangedRestartHost;
                 _session.Dispose();
             }
             base.Dispose(disposing);
