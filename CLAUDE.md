@@ -38,7 +38,12 @@ PTY で `claude` を起動し、公式 Rhino-MCP-Platform のホストに direct
 ソースを変えたら同じ作業内で関連ドキュメントを更新する。
 
 - CLI/コマンド・配線・要件の変更 → `README.md`
-- 設計判断・検証履歴 → `docs/plan-rhinomcp-integration.md`
+- アーキテクチャ（現在の構造・how）→ `docs/architecture.md`
+- xterm⇄PTY 入出力フローの細部 → `docs/details/io-flow-xterm-pty.md`（深掘り資料は `docs/details/` に置く）
+- 設計判断・検証履歴・バグ記録（なぜ・過去）→ `docs/design-history.md`
+- 未実装・今後の作業（これから）→ `docs/roadmap.md`
+
+各 docs の単一責務（how / why / future）を崩さない。重複しそうな内容は片方に集約しリンクで繋ぐ。
 
 ## コミット
 

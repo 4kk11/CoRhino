@@ -86,8 +86,19 @@ src/                        C# Rhino プラグイン
 ├── Pty/                    PTY セッション（Porta.Pty）と claude CLI 解決
 └── Resources/icon.png      パネルアイコン
 ui/                         パネル UI（TypeScript + xterm.js, vite）
-docs/                       設計判断・スパイク手順
+docs/                       設計・アーキテクチャ・ロードマップ（下記）
 ```
+
+## ドキュメント
+
+役割を1ファイル1責務で分けている。
+
+| ファイル | 責務（何が書いてあるか） |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | **現在の構造**（how）。コンポーネント・データフロー・ライフサイクル・設定リファレンス |
+| [`docs/details/io-flow-xterm-pty.md`](docs/details/io-flow-xterm-pty.md) | xterm ⇄ PTY の入出力フローのコード単位の深掘り（`docs/details/` は深掘り資料置き場） |
+| [`docs/design-history.md`](docs/design-history.md) | **なぜこの形か**（why）。設計判断・検証ログ・直したバグ |
+| [`docs/roadmap.md`](docs/roadmap.md) | **これから**（未来）。未実装・今後の作業 |
 
 ## 開発
 
@@ -99,4 +110,4 @@ export CORHINO_WEBUI_URL=http://localhost:5173   # ui/ で `npm run dev` 中
 
 設定時はパネルがディスク上の `web/index.html` ではなく dev サーバの URL を読む。
 
-設計の経緯・確定した判断は [`docs/plan-rhinomcp-integration.md`](docs/plan-rhinomcp-integration.md) を参照。
+各ドキュメントの詳細は上記「ドキュメント」を参照。

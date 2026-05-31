@@ -1,4 +1,11 @@
-# CoRhino × 公式RhinoMCP 統合計画
+# CoRhino 設計史 — 意図・判断・検証ログ
+
+このドキュメントの責務は「**なぜ今この形なのか**」の記録だけに絞る——設計の意図、確定/未確定の判断
+（D / U）、フェーズ計画、リスク、実機検証の結果、調査したバグ（B）。
+- **現在の構造そのものの説明** → [`architecture.md`](architecture.md)
+- **未実装・今後の作業** → [`roadmap.md`](roadmap.md)
+
+ここには上記2つを重複させない。
 
 ## 意図（なぜやるか）
 
@@ -66,10 +73,8 @@ McNeel が育てるので、こちらはツールを持たず**インターフ�
 - 2c: 失敗時のパネル内ステータス表示（「Rhino-MCP 未接続」等）。
 
 ### Phase 3 — 仕上げ
-- ポート競合時のフォールバック（10500 使用中なら採番）。
-- plugin 配信の更新戦略（marketplace 自動 or submodule バンプ）。
-- パネル UI に接続インジケータ。
-- `README` / 利用手順。
+当初の仕上げ項目。一部は実装済み（ポート競合フォールバック＝D6、README）。**未了分は
+[`roadmap.md`](roadmap.md) に移管**（plugin 配信の更新戦略・接続インジケータ等）。
 
 ## リスクと緩和
 
@@ -83,14 +88,10 @@ McNeel が育てるので、こちらはツールを持たず**インターフ�
 
 ## 責務境界（最終形）
 
-```
-公式が育てる（触らない）:
-  Rhino-MCP-Platform (yak)  … tools・HTTPサーバ(10500)
-  cc-plugin                 … agents / commands / skills
-
-CoRhino が持つ:
-  パネルUX + ホストMCP自動起動 + claude起動配線(direct-HTTP) + オンボーディング
-```
+D2 の帰結としての責務分担（公式に乗る／CoRhino が持つ）の図は、現在の構造として
+[`architecture.md`](architecture.md) §1.2 に置く（ここでは重複させない）。要点だけ:
+**CoRhino はインターフェース（パネル UX + 起動配線 + ホスト MCP 自動起動 + オンボーディング）だけを持ち、
+tools/agents は公式 Rhino-MCP-Platform / cc-plugin に乗る。**
 
 ## 実装状況（2026-05-31）
 
@@ -149,14 +150,6 @@ Phase 0 のスパイク（S1/S3）は未実機検証だが、direct-HTTP(D1) 前
   嫌って `MCPSpawn`(hidden ScriptRunner) + 環境変数 `RHINO_MCP_AUTOSTART_PORT` を用意している。
   → `EnsureHostMcpStarted` を「env var セット→ `_-MCPSpawn _Enter`」に変更（CoRhinoPanel.cs）。
   env var をセットすると plugin 側 doc-open autostart も抑止されるので port 所有が一意になる。
-
-### 残（後続フェーズ）
-
-- S3（cc-plugin の agents/commands を `--plugin-dir` で載せ http rhino に束縛できるか）は
-  MVP では未着手。agents 無しの素のツール直叩きで E2E は成立済み。
-- ポート競合フォールバック（Phase 3）。
-- Phase 2b（claude CLI 未導入時の導線整理。現状は bash/cmd フォールバック）、
-  Phase 2c の in-panel ステータスバー（現状はネイティブダイアログ＋コマンドラインで代替）。
 
 ### Phase 2a 実装（2026-05-31）— yak 自動インストール
 
