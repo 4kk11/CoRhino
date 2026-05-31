@@ -148,3 +148,26 @@ Phase 0 のスパイク（S1/S3）は未実機検証だが、direct-HTTP(D1) 前
 - S3（cc-plugin の agents/commands を `--plugin-dir` で載せ http rhino に束縛できるか）は
   MVP では未着手。agents 無しの素のツール直叩きで E2E は成立済み。
 - ポート競合フォールバック（Phase 3）、未導入時の yak 自動 install（Phase 2）。
+
+### 追加決定 D6: ホスト MCP ポートと cwd を per-instance 化（D5 の固定ポート/単一 WS を改訂）
+
+- **背景の不具合**: Rhino を2つ並べる（Mac では実プロセスは1つで、新規ドキュメント＝
+  別ウィンドウ＋別パネルになる）と、全パネルが固定ポート `10500` で `MCPStart` し、全
+  `.mcp.json` も `localhost:10500` を指すため、どのパネルの claude も「10500 を握った
+  ドキュメント」に繋がっていた（B のパネルの指示が A に反映される）。
+- **決定**: パネルごとに**空きポートを採番**（`Workspace.ResolveFreePort()`、10500 から
+  bind 試行で最初の空き）し、その port で `MCPStart` し、その port を指す `.mcp.json` を
+  **per-instance の cwd**（`~/.rhino-claude-panel/sessions/<port>/`）に生成する。これで
+  各パネルの claude は自分のドキュメントのホストに繋がる。
+- **D5 からの改訂点**:
+  - 固定 `HostPort=10500` → 動的採番（`ClaudePanel._hostPort`）。`MCPStart`/`.mcp.json`/
+    doc 切替時の再起動すべて同じ port を使う。
+  - 単一 `workspace/` → `sessions/<port>/` の per-instance dir。CLAUDE.md は共有テンプレ
+    から各 dir に seed（初回のみ）、`.mcp.json` は port から導出されるため常に上書き。
+  - cwd を分けたことで claude のセッション履歴（`~/.claude/projects/<cwd>`）も per-instance
+    に分離され、並行セッションが干渉しない。
+- **検証（2026-05-31, ユーザー実機 pass）**: 2 ドキュメント／2 パネルで、各 claude が
+  他方がアクティブでも自分のドキュメントに正しく反映されることを確認（正しく分離）。
+  - 注意: `run_python` の `scriptcontext.doc` はアクティブ doc を指すため、ホスト直叩きの
+    素朴な count 比較ではアクティブ doc を拾う。実ルーティングはホストのバインド doc 経由で
+    正しく分離される。
