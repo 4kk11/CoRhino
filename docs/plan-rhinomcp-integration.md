@@ -200,3 +200,40 @@ Phase 0 のスパイク（S1/S3）は未実機検証だが、direct-HTTP(D1) 前
   - 注意: `run_python` の `scriptcontext.doc` はアクティブ doc を指すため、ホスト直叩きの
     素朴な count 比較ではアクティブ doc を拾う。実ルーティングはホストのバインド doc 経由で
     正しく分離される。
+
+## セッションのライフサイクルと再起動（設計判断）
+
+### 課題
+`/exit` で Claude Code を終了するとパネルが無言で固まり、パネルを閉じて `CoRhino`
+コマンドで開き直しても再起動しなかった。原因は2点の相互作用:
+
+1. `PtySession` が子プロセス終了後も `_connection` を保持し続け、`IsRunning` が
+   `true` のままだった（終了を検知しても内部状態をクリアしていなかった）。
+2. Rhino の `PanelType.System` パネルはインスタンスがキャッシュされ、閉じても
+   `Dispose` されず、再オープン時にコンストラクタ（＝1回限りの `StartSession`）が
+   再実行されない。死んだ PTY を抱えたまま同じインスタンスが再表示されていた。
+
+### 採用した方針
+- **終了検知の一元化**: `PtySession.HandleExit` を追加し、`ProcessExited` と ReadLoop
+  の EOF の両経路から呼ぶ（`Interlocked` で1回だけ実行）。接続を dispose して
+  `IsRunning` を `false` にし、`Exited` を発火する。ホストによって `ProcessExited`
+  が発火しないケースに備え EOF も終了シグナルとして扱う。
+- **再起動トリガはコマンド再実行に置く**: `OpenCoRhinoPanelCommand` が `OpenPanel`
+  後に `Panels.GetPanel<CoRhinoPanel>(doc)` で生存インスタンスを取得し
+  `EnsureSessionAlive()` を呼ぶ。×ボタンでの再オープンではなく `CoRhino` コマンドを
+  再起動の入口とする（System パネルは Dispose されない前提に依存しないため確実）。
+- **PtySession は使い捨て**: `StartAsync` 2回目例外の仕様は維持し、再起動時は
+  古い session を `Dispose` して新インスタンスを生成・再配線する。状態リセットが
+  確実になる。MCP ホスト・ポート・セッションディレクトリ（`_hostPort`）はパネル
+  存続中そのまま再利用するため再 Spawn は不要。
+- **パネル自動クローズ**: 終了時は `Panels.ClosePanel(GUID, RhinoDoc)` でこのパネルを
+  閉じる（`RhinoDoc.FromRuntimeSerialNumber(_documentSerialNumber)` で自分の doc を
+  解決し、別 doc のパネルを誤って閉じない）。端末に終了表示を残すのではなく画面から
+  消す。キャッシュされたインスタンスは生存し MCP ホスト・ポート・セッション
+  ディレクトリを保持するので、再度 `CoRhino` で開けば `EnsureSessionAlive` が新
+  セッションを起動する。再起動時のみ `onSessionRestart()`（`term.reset()`）を webview
+  に送り、新セッションをクリーンな画面に描画する。
+
+### 再入防止
+`CoRhinoPanel._starting` を `Interlocked` で管理し、起動直後（spawn 完了前）の
+コマンド連打や再起動中の二重 spawn を防ぐ。

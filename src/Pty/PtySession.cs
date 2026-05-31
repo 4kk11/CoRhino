@@ -14,6 +14,7 @@ namespace CoRhino.Pty
         IPtyConnection? _connection;
         CancellationTokenSource? _readerCts;
         Task? _readerTask;
+        int _exitedRaised;
 
         public event Action<byte[]>? DataReceived;
         public event Action<int>? Exited;
@@ -50,11 +51,15 @@ namespace CoRhino.Pty
             };
 
             Log.Write($"[Claude/PTY] Calling PtyProvider.SpawnAsync app={app} cwd={cwd} cols={cols} rows={rows}");
-            _connection = await PtyProvider.SpawnAsync(options, CancellationToken.None).ConfigureAwait(false);
-            Log.Write($"[Claude/PTY] SpawnAsync returned. pid={_connection?.Pid}");
-            _connection.ProcessExited += (_, e) =>
+            var connection = await PtyProvider.SpawnAsync(options, CancellationToken.None).ConfigureAwait(false);
+            _connection = connection;
+            Log.Write($"[Claude/PTY] SpawnAsync returned. pid={connection.Pid}");
+            connection.ProcessExited += (_, e) =>
             {
-                Exited?.Invoke(e.ExitCode);
+                // claude exited (e.g. /exit). Tear the connection down so IsRunning
+                // flips to false and the panel can spawn a fresh session. EOF in
+                // ReadLoop reaches the same path; HandleExit dedupes via _exitedRaised.
+                HandleExit(e.ExitCode);
             };
 
             _readerCts = new CancellationTokenSource();
@@ -81,6 +86,24 @@ namespace CoRhino.Pty
             {
                 Log.Write($"[CoRhino] PTY read error: {ex.Message}");
             }
+
+            // EOF on the master fd means the child closed its end (exit). On some
+            // hosts ProcessExited may not fire, so treat EOF as an exit signal too.
+            // HandleExit is idempotent, so a later ProcessExited is a no-op.
+            if (!ct.IsCancellationRequested)
+                HandleExit(0);
+        }
+
+        // Idempotent teardown of a finished session: dispose the connection, flip
+        // IsRunning to false, and raise Exited exactly once. Safe to call from the
+        // ProcessExited callback, ReadLoop EOF, or Dispose. Does NOT touch the
+        // reader CTS (Dispose owns that) so it can run from inside the reader task.
+        void HandleExit(int exitCode)
+        {
+            if (Interlocked.Exchange(ref _exitedRaised, 1) != 0) return;
+            try { _connection?.Dispose(); } catch { }
+            _connection = null;
+            Exited?.Invoke(exitCode);
         }
 
         public void Write(byte[] data)
@@ -97,6 +120,9 @@ namespace CoRhino.Pty
 
         public void Dispose()
         {
+            // Mark exited first so the reader's EOF / ProcessExited paths don't also
+            // raise Exited while we're tearing the session down explicitly.
+            Interlocked.Exchange(ref _exitedRaised, 1);
             try { _readerCts?.Cancel(); } catch { }
             try { _connection?.Kill(); } catch { }
             try { _connection?.Dispose(); } catch { }

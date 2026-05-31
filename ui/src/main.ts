@@ -5,7 +5,10 @@ import '@xterm/xterm/css/xterm.css'
 declare global {
   interface Window {
     eto?: { postMessage: (msg: string) => void }
-    CoRhinoPanel?: { onPtyData: (text: string) => void }
+    CoRhinoPanel?: {
+      onPtyData: (text: string) => void
+      onSessionRestart: () => void
+    }
     chrome?: { webview?: { postMessage: (msg: string) => void } }
   }
 }
@@ -179,6 +182,12 @@ if (!isWindowsWebView2) {
 window.CoRhinoPanel = {
   onPtyData(text: string) {
     term.write(text)
+  },
+  // A fresh session is starting in this same panel (the panel was reopened via
+  // the CoRhino command after a previous /exit); wipe the dead session's output
+  // so the new claude paints onto a clean screen.
+  onSessionRestart() {
+    term.reset()
   },
 }
 

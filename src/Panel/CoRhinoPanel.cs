@@ -15,9 +15,15 @@ namespace CoRhino.Panel
     public class CoRhinoPanel : Eto.Forms.Panel
     {
         readonly WebView _webView;
-        readonly PtySession _session = new();
+        PtySession _session = new();
         readonly System.Collections.Generic.Queue<string> _pendingOutput = new();
         bool _webReady;
+        // Guards EnsureSessionAlive against re-entrancy: the CoRhino command can fire
+        // again before a respawn finishes wiring, and we must not spawn two claudes.
+        int _starting;
+        // The document this panel instance is keyed to. Needed to close *this*
+        // panel (per-doc) when the claude session ends.
+        readonly uint _documentSerialNumber;
 
         // The RhinoMCP host port this panel owns. Chosen once, free at construction
         // time, so each Rhino instance gets a distinct endpoint. Both MCPStart and
@@ -31,6 +37,7 @@ namespace CoRhino.Panel
 
         public CoRhinoPanel(uint documentSerialNumber)
         {
+            _documentSerialNumber = documentSerialNumber;
             _webView = new WebView { BrowserContextMenuEnabled = false };
             _webView.MessageReceived += OnMessageReceived;
 
@@ -46,9 +53,7 @@ namespace CoRhino.Panel
             }
 #endif
 
-            _session.DataReceived += OnPtyData;
-            _session.Exited += code =>
-                Log.Write($"[CoRhino] PTY exited with code {code}");
+            WireSession(_session);
 
             // Start the in-process RhinoMCP HTTP host in *this* Rhino on our own
             // port, and keep it bound to the active document. The host is per-doc,
@@ -73,6 +78,46 @@ namespace CoRhino.Panel
             LoadWebView();
 
             Log.Write("[CoRhino] Scheduling StartSession on background thread...");
+            // Claim the starting flag so an early CoRhino re-press can't respawn a
+            // second claude before the initial spawn has finished.
+            System.Threading.Interlocked.Exchange(ref _starting, 1);
+            LaunchSessionInBackground();
+        }
+
+        // Subscribe to a (fresh) PtySession's events. Called for the initial session
+        // and for every respawn so the panel always tracks the live session.
+        void WireSession(PtySession session)
+        {
+            session.DataReceived += OnPtyData;
+            session.Exited += OnSessionExited;
+        }
+
+        // claude exited (typically via /exit). The PtySession has already torn its
+        // connection down, so IsRunning is now false. Close this panel; re-running
+        // the CoRhino command reopens it and respawns via EnsureSessionAlive (the
+        // cached instance keeps its MCP host, port, and session dir).
+        void OnSessionExited(int code)
+        {
+            Log.Write($"[CoRhino] PTY exited with code {code}; closing panel.");
+            Application.Instance?.AsyncInvoke(() =>
+            {
+                try
+                {
+                    // ClosePanel takes (Guid, RhinoDoc); resolve this panel's doc from
+                    // its serial number. Falling back to ActiveDoc (null) would close
+                    // the wrong instance when multiple docs each host a panel.
+                    var doc = RhinoDoc.FromRuntimeSerialNumber(_documentSerialNumber);
+                    Rhino.UI.Panels.ClosePanel(typeof(CoRhinoPanel).GUID, doc);
+                }
+                catch (Exception ex)
+                {
+                    Log.Write($"[CoRhino] ClosePanel failed: {ex.GetType().Name}: {ex.Message}");
+                }
+            });
+        }
+
+        void LaunchSessionInBackground()
+        {
             System.Threading.Tasks.Task.Run(async () =>
             {
                 try { await StartSession().ConfigureAwait(false); }
@@ -81,7 +126,41 @@ namespace CoRhino.Panel
                     Log.Write($"[CoRhino] StartSession unhandled: {ex.GetType().Name}: {ex.Message}");
                     Log.Write($"[CoRhino] Stack: {ex.StackTrace}");
                 }
+                finally { System.Threading.Interlocked.Exchange(ref _starting, 0); }
             });
+        }
+
+        /// <summary>
+        /// Called by the CoRhino command after (re)opening the panel. If the claude
+        /// session is still alive this is a no-op (the panel just comes to front).
+        /// If it exited (e.g. the user typed /exit), spawn a fresh session in the
+        /// existing panel — reusing this instance's MCP host, port, and session dir.
+        /// </summary>
+        public void EnsureSessionAlive()
+        {
+            if (_session.IsRunning) return;
+            // Win the right to restart exactly once; a second command press while a
+            // respawn is mid-flight is ignored.
+            if (System.Threading.Interlocked.Exchange(ref _starting, 1) != 0) return;
+
+            Log.Write("[CoRhino] Session not running; respawning claude in existing panel.");
+            var old = _session;
+            old.Dispose();
+
+            var session = new PtySession();
+            WireSession(session);
+            _session = session;
+
+            // Drop any output buffered from the dead session and clear the terminal
+            // so the new claude paints onto a clean screen.
+            _pendingOutput.Clear();
+            Application.Instance?.AsyncInvoke(() =>
+            {
+                if (_webReady)
+                    _ = _webView.ExecuteScriptAsync("window.CoRhinoPanel?.onSessionRestart()");
+            });
+
+            LaunchSessionInBackground();
         }
 
         void LoadWebView()
