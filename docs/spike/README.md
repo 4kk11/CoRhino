@@ -20,7 +20,7 @@
    → ツール定義のJSONが返れば HTTP サーバ生存。空/接続拒否ならポートかMCPStartを見直す。
 
 このリポジトリの `rhino-http.json` を使う（`{"rhino":{"type":"http","url":"http://localhost:10500/"}}`）。
-以下 `SPIKE=/Users/akihito/Documents/my-life/.06_Projects/RhinoClaudePanel/docs/spike`、
+以下 `SPIKE=/Users/akihito/Documents/my-life/.06_Projects/CoRhino/docs/spike`、
 `CCPLUGIN=/Users/akihito/Documents/my-life/.06_Projects/rhino-cli/references/RhinoMCP/cc-plugin` とする。
 
 ---

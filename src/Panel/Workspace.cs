@@ -3,7 +3,7 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 
-namespace RhinoClaudePanel.Panel
+namespace CoRhino.Panel
 {
     /// <summary>
     /// Owns the per-Rhino-instance working directory the embedded Claude session
@@ -23,11 +23,11 @@ namespace RhinoClaudePanel.Panel
             get
             {
                 var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                return Path.Combine(home, ".rhino-claude-panel");
+                return Path.Combine(home, ".corhino");
             }
         }
 
-        /// <summary>~/.rhino-claude-panel/sessions/&lt;port&gt; — this instance's cwd.</summary>
+        /// <summary>~/.corhino/sessions/&lt;port&gt; — this instance's cwd.</summary>
         public static string SessionRoot(int port) => Path.Combine(BaseDir, "sessions", port.ToString());
 
         public static string McpConfigPath(int port) => Path.Combine(SessionRoot(port), ".mcp.json");
@@ -77,11 +77,11 @@ namespace RhinoClaudePanel.Panel
             if (!File.Exists(claudeMd))
             {
                 File.WriteAllText(claudeMd, ClaudeMdTemplate);
-                Log.Write($"[Claude] Seeded CLAUDE.md at {claudeMd}");
+                Log.Write($"[CoRhino] Seeded CLAUDE.md at {claudeMd}");
             }
 
             File.WriteAllText(McpConfigPath(port), McpConfigTemplate(port));
-            Log.Write($"[Claude] Wrote .mcp.json at {McpConfigPath(port)} (port {port})");
+            Log.Write($"[CoRhino] Wrote .mcp.json at {McpConfigPath(port)} (port {port})");
 
             return root;
         }
@@ -106,9 +106,9 @@ namespace RhinoClaudePanel.Panel
         }
 
         const string ClaudeMdTemplate = """
-        # Rhino Claude Workspace
+        # CoRhino Workspace
 
-        この CLAUDE.md は RhinoClaudePanel が起動する Claude セッション専用の作業ディレクトリです。
+        この CLAUDE.md は CoRhino が起動する Claude セッション専用の作業ディレクトリです。
         このディレクトリはパネルがドックされている Rhino インスタンス1つに対応し、セッションは
         アクティブな .3dm の場所ではなく常にこのディレクトリで起動します。Rhino の操作は `rhino`
         MCP サーバ（RhinoMCP）のツール経由で行ってください。接続先はこのインスタンス専用ポートの

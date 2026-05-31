@@ -5,7 +5,7 @@ import '@xterm/xterm/css/xterm.css'
 declare global {
   interface Window {
     eto?: { postMessage: (msg: string) => void }
-    ClaudePanel?: { onPtyData: (text: string) => void }
+    CoRhinoPanel?: { onPtyData: (text: string) => void }
     chrome?: { webview?: { postMessage: (msg: string) => void } }
   }
 }
@@ -35,9 +35,9 @@ function post(msg: Outbound) {
       ext.notify(s)
       return
     }
-    console.error('[Claude] no postMessage bridge available')
+    console.error('[CoRhino] no postMessage bridge available')
   } catch (e) {
-    console.error('[Claude] post failed', e)
+    console.error('[CoRhino] post failed', e)
   }
 }
 
@@ -176,7 +176,7 @@ if (!isWindowsWebView2) {
   document.addEventListener('input', swallowInput, { capture: true })
 }
 
-window.ClaudePanel = {
+window.CoRhinoPanel = {
   onPtyData(text: string) {
     term.write(text)
   },

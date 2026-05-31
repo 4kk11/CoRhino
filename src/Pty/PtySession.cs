@@ -5,9 +5,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using Porta.Pty;
 using Rhino;
-using RhinoClaudePanel;
+using CoRhino;
 
-namespace RhinoClaudePanel.Pty
+namespace CoRhino.Pty
 {
     public class PtySession : IDisposable
     {
@@ -79,7 +79,7 @@ namespace RhinoClaudePanel.Pty
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                Log.Write($"[Claude] PTY read error: {ex.Message}");
+                Log.Write($"[CoRhino] PTY read error: {ex.Message}");
             }
         }
 

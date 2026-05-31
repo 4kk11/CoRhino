@@ -2,11 +2,11 @@ using System;
 using System.IO;
 using Rhino;
 
-namespace RhinoClaudePanel
+namespace CoRhino
 {
     internal static class Log
     {
-        static readonly string LogPath = Path.Combine(Path.GetTempPath(), "RhinoClaudePanel.log");
+        static readonly string LogPath = Path.Combine(Path.GetTempPath(), "CoRhino.log");
 
         static readonly object Gate = new();
 

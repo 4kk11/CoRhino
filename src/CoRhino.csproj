@@ -1,10 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
-    <AssemblyName>RhinoClaudePanel</AssemblyName>
+    <AssemblyName>CoRhino</AssemblyName>
     <OutputType>Library</OutputType>
     <TargetExt>.rhp</TargetExt>
-    <RootNamespace>RhinoClaudePanel</RootNamespace>
+    <RootNamespace>CoRhino</RootNamespace>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
@@ -14,12 +14,12 @@
 
   <PropertyGroup Condition="'$(OS)' == 'Unix'">
     <RhinoResources>/Applications/Rhino 8.app/Contents/Frameworks/RhCore.framework/Versions/A/Resources</RhinoResources>
-    <PluginDestDir>$(HOME)/Library/Application Support/McNeel/Rhinoceros/8.0/MacPlugIns/RhinoClaudePanel</PluginDestDir>
+    <PluginDestDir>$(HOME)/Library/Application Support/McNeel/Rhinoceros/8.0/MacPlugIns/CoRhino</PluginDestDir>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(OS)' == 'Windows_NT'">
     <RhinoResources>C:\Program Files\Rhino 8\System</RhinoResources>
-    <PluginDestDir>$(APPDATA)\McNeel\Rhinoceros\myplugins\RhinoClaudePanel</PluginDestDir>
+    <PluginDestDir>$(APPDATA)\McNeel\Rhinoceros\myplugins\CoRhino</PluginDestDir>
   </PropertyGroup>
 
   <ItemGroup>
@@ -49,8 +49,28 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="..\icon.png" LogicalName="RhinoClaudePanel.icon.png" />
+    <EmbeddedResource Include="Resources\icon.png" LogicalName="CoRhino.icon.png" />
   </ItemGroup>
+
+  <!-- Build the WebView UI (vite) → ../ui/dist. Anchored to the install flow via
+       CopyWebUi's DependsOnTargets (NOT BeforeTargets="Build": that injects right
+       before Build's empty body, i.e. AFTER PostBuildEvent, so vite would run too
+       late). This makes `dotnet build` the single entry point — no separate
+       `npm run build` step. -->
+  <Target Name="BuildUi">
+    <Exec Command="npm install" WorkingDirectory="$(MSBuildProjectDirectory)/../ui"
+          Condition="!Exists('$(MSBuildProjectDirectory)/../ui/node_modules')" />
+    <Exec Command="npm run build" WorkingDirectory="$(MSBuildProjectDirectory)/../ui" />
+  </Target>
+
+  <!-- Copy the built UI into $(TargetDir)/web so PostBuild ships it to the plugin dir.
+       DependsOnTargets BuildUi guarantees dist/ exists before the glob is evaluated. -->
+  <Target Name="CopyWebUi" DependsOnTargets="BuildUi">
+    <ItemGroup>
+      <WebUiFiles Include="$(MSBuildProjectDirectory)/../ui/dist/**/*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(WebUiFiles)" DestinationFolder="$(TargetDir)web/%(RecursiveDir)" SkipUnchangedFiles="true" />
+  </Target>
 
   <!-- Flatten native libs to TargetDir root so the loader finds them via the plugin assembly dir. -->
   <Target Name="FlattenNativeLibs" AfterTargets="Build">
@@ -68,7 +88,7 @@
     <Copy SourceFiles="@(NativeLib)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="'@(NativeLib)' != ''" />
   </Target>
 
-  <Target Name="PostBuild" AfterTargets="PostBuildEvent" DependsOnTargets="FlattenNativeLibs">
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent" DependsOnTargets="FlattenNativeLibs;CopyWebUi">
     <ItemGroup>
       <PluginFiles Include="$(TargetDir)**\*.*" />
     </ItemGroup>
@@ -76,6 +96,6 @@
     <!-- SkipUnchangedFiles + ContinueOnError lets the build succeed even when Rhino has some DLLs locked.
          The locked DLLs are unchanged native deps, so skipping them is harmless. -->
     <Copy SourceFiles="@(PluginFiles)" DestinationFiles="@(PluginFiles->'$(PluginDestDir)\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" ContinueOnError="WarnAndContinue" />
-    <Message Text="RhinoClaudePanel installed to $(PluginDestDir)" Importance="high" />
+    <Message Text="CoRhino installed to $(PluginDestDir)" Importance="high" />
   </Target>
 </Project>

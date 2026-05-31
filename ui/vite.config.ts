@@ -24,12 +24,14 @@ function classicAtBodyEnd(): Plugin {
 export default defineConfig({
   plugins: [viteSingleFile(), classicAtBodyEnd()],
   build: {
-    outDir: '../src/bin/Debug/net8.0/web',
+    // Neutral artifact dir. The .csproj BuildUi target runs this build and copies
+    // dist/ into $(TargetDir)/web, so vite no longer writes into dotnet's output dir.
+    outDir: 'dist',
     emptyOutDir: true,
     rollupOptions: {
       output: {
         format: 'iife',
-        name: 'RhinoClaudePanelUI',
+        name: 'CoRhinoUI',
         inlineDynamicImports: true,
       },
     },

@@ -1,8 +1,8 @@
-# RhinoClaudePanel × 公式RhinoMCP 統合計画
+# CoRhino × 公式RhinoMCP 統合計画
 
 ## 意図（なぜやるか）
 
-RhinoClaudePanel を入れるだけで、Rhino にドックした Claude Code パネルが
+CoRhino を入れるだけで、Rhino にドックした Claude Code パネルが
 **今いるその Rhino を操作できる**状態にする。非エンジニアが対象なので、
 手動の `MCPConnect` / `/plugin install` / 設定貼り付けを一切踏ませない。
 
@@ -17,7 +17,7 @@ McNeel が育てるので、こちらはツールを持たず**インターフ�
     spawn して別インスタンスを管理する設計で、この用途と噛み合わない。direct-HTTP なら
     Node.js 依存も router も消える。router のウリ（即接続/Rhino起動/多重/クラッシュ回復/
     8・9同時）はパネル内蔵トポロジーでは全て無効。
-- **D2: ツールはコピーしない。RhinoClaudePanel の責務はパネルUX + 起動配線 + オンボーディングのみ。**
+- **D2: ツールはコピーしない。CoRhino の責務はパネルUX + 起動配線 + オンボーディングのみ。**
   - 理由: 「公式が勝手に育つ」に乗るため。vendoring は方針と逆（自分でフォーク保守が発生）。
 - **D3: 設定はセッション単位で注入（起動フラグ / `--settings`）。グローバル `~/.claude` を汚さない。**
   - 理由: Rhino から開いた claude のときだけ rhino ツールが付くのが自然。他プロジェクトに漏らさない。
@@ -48,11 +48,11 @@ McNeel が育てるので、こちらはツールを持たず**インターフ�
 - **Phase 0 の成果物**: D1 配線の確定版コマンドライン + plugin 配信方式の最終決定
   （marketplace via `--settings` か、`--plugin-dir` + submodule か）。
 
-### Phase 1 — MVP 自動配線（RhinoClaudePanel 本体）
-- 1a: パネル起動時にホスト MCP を自動起動。`ClaudePanel` から `RhinoApp.RunScript("_-MCPStart 10500\n", false)`
+### Phase 1 — MVP 自動配線（CoRhino 本体）
+- 1a: パネル起動時にホスト MCP を自動起動。`CoRhinoPanel` から `RhinoApp.RunScript("_-MCPStart 10500\n", false)`
   を発火（`Rhino-MCP-Platform` 未導入なら skip してログ）。doc 切替時は既存の
   `EndOpenDocument`/`NewDocument` フックで再発火（サーバは doc 単位）。
-- 1b: `ClaudePanel.StartSession()` の claude 起動引数に Phase 0 で確定した配線を注入
+- 1b: `CoRhinoPanel.StartSession()` の claude 起動引数に Phase 0 で確定した配線を注入
   （`--mcp-config <生成した rhino-http.json>` ± plugin 有効化フラグ）。json は
   プラグインディレクトリ配下に生成。
 - 1c: E2E 確認: 箱を1つ置いた Rhino でパネルを開き、「何がある?」→ 箱を答える、
@@ -88,7 +88,7 @@ McNeel が育てるので、こちらはツールを持たず**インターフ�
   Rhino-MCP-Platform (yak)  … tools・HTTPサーバ(10500)
   cc-plugin                 … agents / commands / skills
 
-RhinoClaudePanel が持つ:
+CoRhino が持つ:
   パネルUX + ホストMCP自動起動 + claude起動配線(direct-HTTP) + オンボーディング
 ```
 
@@ -99,7 +99,7 @@ Phase 0 のスパイク（S1/S3）は未実機検証だが、direct-HTTP(D1) 前
 
 ### 追加決定 D5: claude の cwd は固定ワークスペースに統一
 
-- **決定**: claude は常に `~/.rhino-claude-panel/workspace` で起動する。アクティブ
+- **決定**: claude は常に `~/.corhino/workspace` で起動する。アクティブ
   `.3dm` の場所には追従しない（旧 `OnDocChanged` の `cd` 送信は廃止）。
 - **理由**: セッション設定（CLAUDE.md / `.mcp.json`）を一元化するため。`.3dm` ごとに
   cwd が散らばると、どのディレクトリの CLAUDE.md が効くか不定になり、非エンジニアに
@@ -107,9 +107,9 @@ Phase 0 のスパイク（S1/S3）は未実機検証だが、direct-HTTP(D1) 前
 - **`.mcp.json` の置き場所**: 計画 1b は「プラグインディレクトリ配下に生成」だったが、
   cwd=WS に変更したため **WS 直下に生成**へ更新。config が cwd と同居して自然。
 
-### 実装済み（src/Panel/Workspace.cs, ClaudePanel.cs）
+### 実装済み（src/Panel/Workspace.cs, CoRhinoPanel.cs）
 
-- **1a ホスト MCP 自動起動**: `ClaudePanel` 生成時に `_-MCPStart 10500` を発火
+- **1a ホスト MCP 自動起動**: `CoRhinoPanel` 生成時に `_-MCPStart 10500` を発火
   （`RhinoApp.RunScript`）。`MCPStartCommand` は `StartOrRestart` なので再発火は安全。
   サーバは doc 単位のため `EndOpenDocument`/`NewDocument` で再発火。未導入時は
   RunScript=false をログして継続（install 導線は Phase 2）。
@@ -136,12 +136,19 @@ Phase 0 のスパイク（S1/S3）は未実機検証だが、direct-HTTP(D1) 前
 
 ### 検証中に直したバグ
 
-- **B1 MCPStart のコマンドネスト失敗**: パネルが `RhinoClaude` コマンド経由で構築されると
+- **B1 MCPStart のコマンドネスト失敗**: パネルが `CoRhino` コマンド経由で構築されると
   コンストラクタ内の同期 `RhinoApp.RunScript("_-MCPStart")` が入れ子になり失敗。
-  → `RhinoApp.Idle` ワンショットに遅延させ top-level 実行に修正（ClaudePanel.cs）。
+  → `RhinoApp.Idle` ワンショットに遅延させ top-level 実行に修正（CoRhinoPanel.cs）。
 - **B2 libporta_pty.dylib のアーキ不一致**: `FlattenNativeLibs` が osx-arm64/osx-x64 を
   同名フラット化し x64 が勝ち、arm64 Rhino で dlopen 失敗→PTY 起動不可だった。
   → `lipo -create` でユニバーサルバイナリ化（csproj）。両 arch で load 可能に。
+- **B3 MCPStart で port を runscript 引数に渡せず host 未起動**: `_-MCPStart {port}` の
+  `MCPStartCommand` は `GetInteger` で port を対話取得する設計で、runscript からは port を
+  消費できず余った数値が "不明なコマンド: 10500" として漏れ、サーバが起動しなかった
+  （yak 0.1.3 は doc-open autostart も無いため完全に未起動）。RhinoMCP 側はこの racy な経路を
+  嫌って `MCPSpawn`(hidden ScriptRunner) + 環境変数 `RHINO_MCP_AUTOSTART_PORT` を用意している。
+  → `EnsureHostMcpStarted` を「env var セット→ `_-MCPSpawn _Enter`」に変更（CoRhinoPanel.cs）。
+  env var をセットすると plugin 側 doc-open autostart も抑止されるので port 所有が一意になる。
 
 ### 残（後続フェーズ）
 
@@ -159,7 +166,7 @@ Phase 0 のスパイク（S1/S3）は未実機検証だが、direct-HTTP(D1) 前
   GUID は RhinoMCP の `rhino/plugin/Properties/AssemblyInfo.cs` 由来。yak パッケージ dir
   スキャンではなく plugin id で見るのは、ローカル Debug コピー（yak パッケージではない）も
   正しく「導入済み」と判定するため（`yak list` には出ない）。
-- **配線（ClaudePanel.cs）**: パネル構築時に `IsInstalled()` を判定。導入済みなら従来どおり
+- **配線（CoRhinoPanel.cs）**: パネル構築時に `IsInstalled()` を判定。導入済みなら従来どおり
   `EnsureHostMcpStarted()`、未導入なら `RhinoMcpInstaller.RunOnboarding()` を起動し MCPStart は
   撃たない。doc 切替の再起動（`OnDocChangedRestartHost`）も `IsInstalled()` ガードを追加。
 - **オンボーディング UX**: モーダルがパネル構築を止めないよう `RhinoApp.Idle` ワンショットに遅延。
@@ -179,10 +186,10 @@ Phase 0 のスパイク（S1/S3）は未実機検証だが、direct-HTTP(D1) 前
   ドキュメント」に繋がっていた（B のパネルの指示が A に反映される）。
 - **決定**: パネルごとに**空きポートを採番**（`Workspace.ResolveFreePort()`、10500 から
   bind 試行で最初の空き）し、その port で `MCPStart` し、その port を指す `.mcp.json` を
-  **per-instance の cwd**（`~/.rhino-claude-panel/sessions/<port>/`）に生成する。これで
+  **per-instance の cwd**（`~/.corhino/sessions/<port>/`）に生成する。これで
   各パネルの claude は自分のドキュメントのホストに繋がる。
 - **D5 からの改訂点**:
-  - 固定 `HostPort=10500` → 動的採番（`ClaudePanel._hostPort`）。`MCPStart`/`.mcp.json`/
+  - 固定 `HostPort=10500` → 動的採番（`CoRhinoPanel._hostPort`）。`MCPStart`/`.mcp.json`/
     doc 切替時の再起動すべて同じ port を使う。
   - 単一 `workspace/` → `sessions/<port>/` の per-instance dir。CLAUDE.md は共有テンプレ
     から各 dir に seed（初回のみ）、`.mcp.json` は port から導出されるため常に上書き。

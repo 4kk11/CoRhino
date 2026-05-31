@@ -7,7 +7,7 @@ using Eto.Forms;
 using Rhino;
 using Rhino.PlugIns;
 
-namespace RhinoClaudePanel.Panel
+namespace CoRhino.Panel
 {
     /// <summary>
     /// Phase 2a onboarding: make sure the official Rhino-MCP-Platform yak package is
@@ -25,7 +25,7 @@ namespace RhinoClaudePanel.Panel
         static readonly Guid PluginId = new("2668d7ed-f507-4a68-8295-8172147a0e39");
 
         const string PackageName = "Rhino-MCP-Platform";
-        const string DialogCaption = "Rhino Claude Panel";
+        const string DialogCaption = "CoRhino";
 
         /// <summary>True once Rhino knows the plugin (installed; load may be pending).</summary>
         public static bool IsInstalled() => PlugIn.PlugInExists(PluginId, out _, out _);
@@ -45,7 +45,7 @@ namespace RhinoClaudePanel.Panel
                 try { StartOnboarding(); }
                 catch (Exception ex)
                 {
-                    Log.Write($"[Claude] Onboarding threw: {ex.GetType().Name}: {ex.Message}");
+                    Log.Write($"[CoRhino] Onboarding threw: {ex.GetType().Name}: {ex.Message}");
                 }
             };
             RhinoApp.Idle += handler;
@@ -56,7 +56,7 @@ namespace RhinoClaudePanel.Panel
             var yak = ResolveYak();
             if (yak == null)
             {
-                Log.Write("[Claude] yak CLI not found; cannot auto-install Rhino-MCP-Platform.");
+                Log.Write("[CoRhino] yak CLI not found; cannot auto-install Rhino-MCP-Platform.");
                 ShowError(
                     "Rhino 操作に必要な Rhino-MCP-Platform が未導入ですが、yak CLI が見つからず自動インストールできませんでした。\n\n" +
                     "Rhino の PackageManager から \"Rhino-MCP-Platform\" を手動でインストールし、Rhino を再起動してください。");
@@ -72,13 +72,13 @@ namespace RhinoClaudePanel.Panel
 
             if (consent != DialogResult.Yes)
             {
-                Log.Write("[Claude] User declined Rhino-MCP-Platform install.");
+                Log.Write("[CoRhino] User declined Rhino-MCP-Platform install.");
                 return;
             }
 
             // Lightweight progress on the command line; the heavy states (done→restart,
             // error) are native dialogs per the chosen status mechanism.
-            Log.Write($"[Claude] Installing {PackageName} via {yak} ...");
+            Log.Write($"[CoRhino] Installing {PackageName} via {yak} ...");
             RhinoApp.WriteLine($"{PackageName} をインストールしています...");
 
             Task.Run(() =>
@@ -129,12 +129,12 @@ namespace RhinoClaudePanel.Panel
                 }
 
                 var combined = ($"{stdout}\n{stderr}").Trim();
-                Log.Write($"[Claude] yak install exit={proc.ExitCode}: {combined}");
+                Log.Write($"[CoRhino] yak install exit={proc.ExitCode}: {combined}");
                 return (proc.ExitCode == 0, combined);
             }
             catch (Exception ex)
             {
-                Log.Write($"[Claude] yak install threw: {ex.GetType().Name}: {ex.Message}");
+                Log.Write($"[CoRhino] yak install threw: {ex.GetType().Name}: {ex.Message}");
                 return (false, ex.Message);
             }
         }
@@ -166,7 +166,7 @@ namespace RhinoClaudePanel.Panel
             }
             catch (Exception ex)
             {
-                Log.Write($"[Claude] ResolveYak threw: {ex.GetType().Name}: {ex.Message}");
+                Log.Write($"[CoRhino] ResolveYak threw: {ex.GetType().Name}: {ex.Message}");
                 return null;
             }
         }

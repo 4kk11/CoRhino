@@ -2,6 +2,8 @@
 [Bb]in/
 [Oo]bj/
 [Oo]ut/
+dist/
+node_modules/
 [Dd]ebug/
 [Rr]elease/
 [Dd]ebugPublic/
