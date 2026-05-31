@@ -53,10 +53,21 @@ namespace RhinoClaudePanel.Panel
             // Start the in-process RhinoMCP HTTP host in *this* Rhino on our own
             // port, and keep it bound to the active document. The host is per-doc,
             // so re-fire on open/new. claude connects to it via the session .mcp.json.
+            // If Rhino-MCP-Platform isn't installed there is no host to start, so run
+            // the install onboarding instead (Phase 2a) and skip MCPStart until the
+            // user restarts Rhino with the package present.
             Log.Write($"[Claude] Selected host MCP port {_hostPort}.");
-            EnsureHostMcpStarted();
             RhinoDoc.EndOpenDocument += OnDocChangedRestartHost;
             RhinoDoc.NewDocument += OnDocChangedRestartHost;
+            if (RhinoMcpInstaller.IsInstalled())
+            {
+                EnsureHostMcpStarted();
+            }
+            else
+            {
+                Log.Write("[Claude] Rhino-MCP-Platform not installed; starting install onboarding.");
+                RhinoMcpInstaller.RunOnboarding();
+            }
 
             Content = _webView;
             LoadWebView();
@@ -180,7 +191,12 @@ namespace RhinoClaudePanel.Panel
         }
 
         void OnDocChangedRestartHost(object? sender, Rhino.DocumentEventArgs e)
-            => EnsureHostMcpStarted();
+        {
+            // The host is per-doc, but only worth restarting if the package is present.
+            // While onboarding is pending (install + restart) there is nothing to start.
+            if (RhinoMcpInstaller.IsInstalled())
+                EnsureHostMcpStarted();
+        }
 
         void OnMessageReceived(object? sender, WebViewMessageEventArgs e)
         {

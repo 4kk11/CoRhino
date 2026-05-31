@@ -147,7 +147,29 @@ Phase 0 のスパイク（S1/S3）は未実機検証だが、direct-HTTP(D1) 前
 
 - S3（cc-plugin の agents/commands を `--plugin-dir` で載せ http rhino に束縛できるか）は
   MVP では未着手。agents 無しの素のツール直叩きで E2E は成立済み。
-- ポート競合フォールバック（Phase 3）、未導入時の yak 自動 install（Phase 2）。
+- ポート競合フォールバック（Phase 3）。
+- Phase 2b（claude CLI 未導入時の導線整理。現状は bash/cmd フォールバック）、
+  Phase 2c の in-panel ステータスバー（現状はネイティブダイアログ＋コマンドラインで代替）。
+
+### Phase 2a 実装（2026-05-31）— yak 自動インストール
+
+未導入時の手動 `yak install` ステップを排除する。`src/Panel/RhinoMcpInstaller.cs` を追加。
+
+- **導入検出**: `PlugIn.PlugInExists(2668d7ed-f507-4a68-8295-8172147a0e39, ...)` で判定。
+  GUID は RhinoMCP の `rhino/plugin/Properties/AssemblyInfo.cs` 由来。yak パッケージ dir
+  スキャンではなく plugin id で見るのは、ローカル Debug コピー（yak パッケージではない）も
+  正しく「導入済み」と判定するため（`yak list` には出ない）。
+- **配線（ClaudePanel.cs）**: パネル構築時に `IsInstalled()` を判定。導入済みなら従来どおり
+  `EnsureHostMcpStarted()`、未導入なら `RhinoMcpInstaller.RunOnboarding()` を起動し MCPStart は
+  撃たない。doc 切替の再起動（`OnDocChangedRestartHost`）も `IsInstalled()` ガードを追加。
+- **オンボーディング UX**: モーダルがパネル構築を止めないよう `RhinoApp.Idle` ワンショットに遅延。
+  確認ダイアログ（Eto `MessageBox` YesNo）を**1回だけ**出し、Yes で yak install を**バックグラウンド
+  スレッド**実行。進捗はコマンドライン、完了→「Rhino 再起動」案内／失敗→エラーは Eto ネイティブ
+  ダイアログ。再起動が要るのは yak 導入プラグインが起動時しかロードされないため。
+- **yak CLI 解決**: macOS は `<Rhino N.app>/Contents/Resources/bin/yak`（実行プロセスの MainModule
+  から導出）、Windows は Rhino System dir の `yak.exe`（RhinoCommon.dll と同居）。
+- **検証**: `yak search Rhino-MCP-Platform` で既定サーバに `0.1.3`（prerelease ゲートなし）を確認済み。
+  Debug ビルド成功。実機の未導入→install→再起動フローは要実機確認。
 
 ### 追加決定 D6: ホスト MCP ポートと cwd を per-instance 化（D5 の固定ポート/単一 WS を改訂）
 
