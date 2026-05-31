@@ -1,73 +1,103 @@
 using System;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 
 namespace RhinoClaudePanel.Panel
 {
     /// <summary>
-    /// Owns the single, fixed directory that the embedded Claude session always
-    /// runs in. The session no longer follows the active .3dm; instead it always
-    /// launches in <see cref="Root"/> so that one CLAUDE.md and one .mcp.json
-    /// (RhinoMCP only) drive every session regardless of which model is open.
+    /// Owns the per-Rhino-instance working directory the embedded Claude session
+    /// runs in. The session does not follow the active .3dm; instead each panel
+    /// gets a stable session dir keyed by the host MCP port it owns, so two Rhinos
+    /// running side by side never share a cwd, a claude history, or — critically —
+    /// an MCP endpoint. Each session dir carries its own CLAUDE.md (from the shared
+    /// template) and a .mcp.json pointing at *that* Rhino's host.
     /// </summary>
     static class Workspace
     {
-        /// <summary>
-        /// Port the panel starts the in-process RhinoMCP HTTP server on
-        /// (MCPStart), and that the generated .mcp.json points claude at.
-        /// </summary>
-        public const int HostPort = 10500;
+        /// <summary>Lowest port to probe for a per-instance RhinoMCP host.</summary>
+        public const int BasePort = 10500;
 
-        /// <summary>~/.rhino-claude-panel/workspace</summary>
-        public static string Root
+        static string BaseDir
         {
             get
             {
                 var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                return Path.Combine(home, ".rhino-claude-panel", "workspace");
+                return Path.Combine(home, ".rhino-claude-panel");
             }
         }
 
-        public static string McpConfigPath => Path.Combine(Root, ".mcp.json");
+        /// <summary>~/.rhino-claude-panel/sessions/&lt;port&gt; — this instance's cwd.</summary>
+        public static string SessionRoot(int port) => Path.Combine(BaseDir, "sessions", port.ToString());
 
-        static string ClaudeMdPath => Path.Combine(Root, "CLAUDE.md");
+        public static string McpConfigPath(int port) => Path.Combine(SessionRoot(port), ".mcp.json");
 
         /// <summary>
-        /// Create the workspace directory and seed CLAUDE.md / .mcp.json from the
-        /// bundled templates. Existing files are never overwritten — the user owns
-        /// them once created. Returns the workspace root path.
+        /// Find a free TCP port for this Rhino's MCP host, starting at
+        /// <see cref="BasePort"/>. When Rhino A already holds 10500, Rhino B binds
+        /// 10501, and so on — each instance ends up with a distinct port and never
+        /// steals another's endpoint.
         /// </summary>
-        public static string EnsureInitialized()
+        public static int ResolveFreePort(int count = 100)
         {
-            var root = Root;
+            for (var port = BasePort; port < BasePort + count; port++)
+            {
+                if (IsPortFree(port)) return port;
+            }
+            return BasePort; // give up after the range; MCPStart will surface the bind error
+        }
+
+        static bool IsPortFree(int port)
+        {
+            try
+            {
+                var listener = new TcpListener(IPAddress.Loopback, port);
+                listener.Start();
+                listener.Stop();
+                return true;
+            }
+            catch (SocketException)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Create this instance's session dir and (re)write its files. CLAUDE.md is
+        /// seeded once from the shared template and then owned by the user. The
+        /// .mcp.json is derived purely from <paramref name="port"/>, so it is always
+        /// rewritten to stay correct. Returns the session dir (the claude cwd).
+        /// </summary>
+        public static string EnsureSession(int port)
+        {
+            var root = SessionRoot(port);
             Directory.CreateDirectory(root);
 
-            if (!File.Exists(ClaudeMdPath))
+            var claudeMd = Path.Combine(root, "CLAUDE.md");
+            if (!File.Exists(claudeMd))
             {
-                File.WriteAllText(ClaudeMdPath, ClaudeMdTemplate);
-                Log.Write($"[Claude] Seeded CLAUDE.md at {ClaudeMdPath}");
+                File.WriteAllText(claudeMd, ClaudeMdTemplate);
+                Log.Write($"[Claude] Seeded CLAUDE.md at {claudeMd}");
             }
 
-            if (!File.Exists(McpConfigPath))
-            {
-                File.WriteAllText(McpConfigPath, McpConfigTemplate());
-                Log.Write($"[Claude] Seeded .mcp.json at {McpConfigPath}");
-            }
+            File.WriteAllText(McpConfigPath(port), McpConfigTemplate(port));
+            Log.Write($"[Claude] Wrote .mcp.json at {McpConfigPath(port)} (port {port})");
 
             return root;
         }
 
-        static string McpConfigTemplate()
+        static string McpConfigTemplate(int port)
         {
-            // Single MCP server: the RhinoMCP HTTP host running *inside the docked
-            // Rhino* (started by the panel via MCPStart). Direct-HTTP — no node
-            // router, no separately-spawned Rhino — so claude operates THIS Rhino.
-            // Generated once; edit this file (not the template) to tweak it.
+            // Single MCP server: the RhinoMCP HTTP host running *inside this* Rhino
+            // (started by the panel via MCPStart on this instance's port). Direct-HTTP
+            // — no node router, no separately-spawned Rhino — so claude operates the
+            // Rhino its panel is docked in, not whichever instance grabbed 10500.
             return $$"""
             {
               "mcpServers": {
                 "rhino": {
                   "type": "http",
-                  "url": "http://localhost:{{HostPort}}/"
+                  "url": "http://localhost:{{port}}/"
                 }
               }
             }
@@ -79,8 +109,10 @@ namespace RhinoClaudePanel.Panel
         # Rhino Claude Workspace
 
         この CLAUDE.md は RhinoClaudePanel が起動する Claude セッション専用の作業ディレクトリです。
-        セッションはアクティブな .3dm の場所ではなく、常にこのディレクトリで起動します。
-        Rhino の操作は `rhino` MCP サーバ（RhinoMCP）のツール経由で行ってください。
+        このディレクトリはパネルがドックされている Rhino インスタンス1つに対応し、セッションは
+        アクティブな .3dm の場所ではなく常にこのディレクトリで起動します。Rhino の操作は `rhino`
+        MCP サーバ（RhinoMCP）のツール経由で行ってください。接続先はこのインスタンス専用ポートの
+        ホストなので、ツール呼び出しは必ずこのパネルの Rhino に反映されます。
 
         ## 主要ツール（RhinoMCP）
 

@@ -19,6 +19,11 @@ namespace RhinoClaudePanel.Panel
         readonly System.Collections.Generic.Queue<string> _pendingOutput = new();
         bool _webReady;
 
+        // The RhinoMCP host port this panel owns. Chosen once, free at construction
+        // time, so each Rhino instance gets a distinct endpoint. Both MCPStart and
+        // the generated .mcp.json use it, keeping claude bound to *this* Rhino.
+        readonly int _hostPort = Workspace.ResolveFreePort();
+
         static readonly JsonSerializerOptions JsonOptions = new()
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
@@ -45,9 +50,10 @@ namespace RhinoClaudePanel.Panel
             _session.Exited += code =>
                 Log.Write($"[Claude] PTY exited with code {code}");
 
-            // Start the in-process RhinoMCP HTTP host in *this* Rhino, and keep it
-            // bound to the active document. The host is per-doc, so re-fire on
-            // open/new. claude connects to it via the workspace .mcp.json.
+            // Start the in-process RhinoMCP HTTP host in *this* Rhino on our own
+            // port, and keep it bound to the active document. The host is per-doc,
+            // so re-fire on open/new. claude connects to it via the session .mcp.json.
+            Log.Write($"[Claude] Selected host MCP port {_hostPort}.");
             EnsureHostMcpStarted();
             RhinoDoc.EndOpenDocument += OnDocChangedRestartHost;
             RhinoDoc.NewDocument += OnDocChangedRestartHost;
@@ -95,18 +101,18 @@ namespace RhinoClaudePanel.Panel
             try
             {
                 var (claudePath, loginPath) = CliResolver.Resolve();
-                var cwd = Workspace.EnsureInitialized();
+                var cwd = Workspace.EnsureSession(_hostPort);
 
                 var env = new System.Collections.Generic.Dictionary<string, string>();
                 if (!string.IsNullOrEmpty(loginPath)) env["PATH"] = loginPath!;
 
-                // Load ONLY the workspace's RhinoMCP config and ignore the user's
-                // global/project MCP settings, so every session sees the same
-                // single `rhino` server regardless of where claude is invoked.
+                // Load ONLY this session's RhinoMCP config (which points at this
+                // instance's host port) and ignore the user's global/project MCP
+                // settings, so claude talks to this Rhino and nothing leaks in.
                 var claudeArgs = new[]
                 {
                     "--strict-mcp-config",
-                    "--mcp-config", Workspace.McpConfigPath,
+                    "--mcp-config", Workspace.McpConfigPath(_hostPort),
                 };
 
                 var isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
@@ -143,12 +149,13 @@ namespace RhinoClaudePanel.Panel
             }
         }
 
-        static void EnsureHostMcpStarted()
+        void EnsureHostMcpStarted()
         {
             // RhinoApp.RunScript must not run nested inside another command, but the
             // panel is often constructed *from* the RhinoClaude command. Defer to the
             // next Idle so MCPStart runs as a top-level script (otherwise the nested
             // RunScript fails and the host never comes up).
+            var port = _hostPort;
             EventHandler? handler = null;
             handler = (_, _) =>
             {
@@ -159,9 +166,9 @@ namespace RhinoClaudePanel.Panel
                 // returns false; we log and move on (onboarding handles install).
                 try
                 {
-                    var ok = RhinoApp.RunScript($"_-MCPStart {Workspace.HostPort}\n", false);
+                    var ok = RhinoApp.RunScript($"_-MCPStart {port}\n", false);
                     Log.Write(ok
-                        ? $"[Claude] MCPStart {Workspace.HostPort} fired (host MCP up)."
+                        ? $"[Claude] MCPStart {port} fired (host MCP up)."
                         : $"[Claude] MCPStart failed (Rhino-MCP-Platform not installed?).");
                 }
                 catch (Exception ex)
