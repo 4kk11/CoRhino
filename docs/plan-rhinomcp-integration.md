@@ -91,3 +91,36 @@ McNeel が育てるので、こちらはツールを持たず**インターフ�
 RhinoClaudePanel が持つ:
   パネルUX + ホストMCP自動起動 + claude起動配線(direct-HTTP) + オンボーディング
 ```
+
+## 実装状況（2026-05-31）
+
+Phase 0 のスパイク（S1/S3）は未実機検証だが、direct-HTTP(D1) 前提で Phase 1a/1b
+の製品配線を先行実装した。あわせて、計画外だった **cwd 統一** を新規決定して反映。
+
+### 追加決定 D5: claude の cwd は固定ワークスペースに統一
+
+- **決定**: claude は常に `~/.rhino-claude-panel/workspace` で起動する。アクティブ
+  `.3dm` の場所には追従しない（旧 `OnDocChanged` の `cd` 送信は廃止）。
+- **理由**: セッション設定（CLAUDE.md / `.mcp.json`）を一元化するため。`.3dm` ごとに
+  cwd が散らばると、どのディレクトリの CLAUDE.md が効くか不定になり、非エンジニアに
+  とって挙動が読めない。固定 WS なら「常に同じ設定で同じ Rhino を操作」になる。
+- **`.mcp.json` の置き場所**: 計画 1b は「プラグインディレクトリ配下に生成」だったが、
+  cwd=WS に変更したため **WS 直下に生成**へ更新。config が cwd と同居して自然。
+
+### 実装済み（src/Panel/Workspace.cs, ClaudePanel.cs）
+
+- **1a ホスト MCP 自動起動**: `ClaudePanel` 生成時に `_-MCPStart 10500` を発火
+  （`RhinoApp.RunScript`）。`MCPStartCommand` は `StartOrRestart` なので再発火は安全。
+  サーバは doc 単位のため `EndOpenDocument`/`NewDocument` で再発火。未導入時は
+  RunScript=false をログして継続（install 導線は Phase 2）。
+- **1b claude 起動配線**: `StartSession()` で WS を `EnsureInitialized()`（初回のみ
+  CLAUDE.md と direct-HTTP の `.mcp.json` を生成、既存は上書きしない）し、
+  `claude --strict-mcp-config --mcp-config <WS>/.mcp.json` を WS で起動。
+  `--strict-mcp-config` でユーザーのグローバル/プロジェクト MCP を排除し、`rhino`
+  （http://localhost:10500/）だけをロードする。
+
+### 残（Phase 0 検証が前提）
+
+- S1/S3 の実機検証（U1 名前空間束縛・U3/U4 precedence）は未消化。cc-plugin の
+  agents を載せるか（`--plugin-dir`）はここで確定後に 1b へ追記する。
+- ポート競合フォールバック（Phase 3）、未導入時の yak 自動 install（Phase 2）。
