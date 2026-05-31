@@ -145,21 +145,31 @@ namespace RhinoClaudePanel.Panel
 
         static void EnsureHostMcpStarted()
         {
-            // MCPStart prompts for a port; the `-` dash form feeds it from script.
-            // StartOrRestart semantics make re-firing on each doc safe. If the
-            // RhinoMCP plugin isn't installed the command is unknown → RunScript
-            // returns false; we log and move on (onboarding handles install).
-            try
+            // RhinoApp.RunScript must not run nested inside another command, but the
+            // panel is often constructed *from* the RhinoClaude command. Defer to the
+            // next Idle so MCPStart runs as a top-level script (otherwise the nested
+            // RunScript fails and the host never comes up).
+            EventHandler? handler = null;
+            handler = (_, _) =>
             {
-                var ok = RhinoApp.RunScript($"_-MCPStart {Workspace.HostPort}\n", false);
-                Log.Write(ok
-                    ? $"[Claude] MCPStart {Workspace.HostPort} fired (host MCP up)."
-                    : $"[Claude] MCPStart failed (Rhino-MCP-Platform not installed?).");
-            }
-            catch (Exception ex)
-            {
-                Log.Write($"[Claude] MCPStart threw: {ex.GetType().Name}: {ex.Message}");
-            }
+                RhinoApp.Idle -= handler;
+                // MCPStart prompts for a port; the `-` dash form feeds it from script.
+                // StartOrRestart semantics make re-firing on each doc safe. If the
+                // RhinoMCP plugin isn't installed the command is unknown → RunScript
+                // returns false; we log and move on (onboarding handles install).
+                try
+                {
+                    var ok = RhinoApp.RunScript($"_-MCPStart {Workspace.HostPort}\n", false);
+                    Log.Write(ok
+                        ? $"[Claude] MCPStart {Workspace.HostPort} fired (host MCP up)."
+                        : $"[Claude] MCPStart failed (Rhino-MCP-Platform not installed?).");
+                }
+                catch (Exception ex)
+                {
+                    Log.Write($"[Claude] MCPStart threw: {ex.GetType().Name}: {ex.Message}");
+                }
+            };
+            RhinoApp.Idle += handler;
         }
 
         void OnDocChangedRestartHost(object? sender, Rhino.DocumentEventArgs e)
