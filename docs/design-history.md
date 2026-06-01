@@ -151,6 +151,15 @@ Phase 0 のスパイク（S1/S3）は未実機検証だが、direct-HTTP(D1) 前
   → `EnsureHostMcpStarted` を「env var セット→ `_-MCPSpawn _Enter`」に変更（CoRhinoPanel.cs）。
   env var をセットすると plugin 側 doc-open autostart も抑止されるので port 所有が一意になる。
 
+- **B4 Windows 日本語 IME の入力重複（2026-06-01, 動画報告）**: パネルで日本語を変換すると、最初に確定した語
+  （例 `日本語`）が以後の変換のたびに再送されて `日本語日本語日本語…` と増殖し、新しく変換中の語は確定されなかった。
+  原因は Windows 限定の helper textarea クランプ `.xterm-helper-textarea { max-width:0; max-height:0 }`（[main.ts:81](../ui/src/main.ts#L81)）。
+  これは「合成中に textarea が伸びてパネルが横スクロール → FitAddon → PTY resize → TUI 再描画」のカスケード対策だったが、
+  xterm の `CompositionHelper.updateCompositionElements` は IME 用に textarea を `Math.max(bounds, 1)` で 1px 下限に保つ設計で、
+  CSS の `max-width:0` がインライン幅を上書きして 0×0 に潰し、xterm が「certain IMEs may break」と警告する条件そのものを踏んでいた。
+  0×0 の textarea で Windows/WebView2 の IME が合成位置を追えず、`_compositionPosition` 起点計算がずれて確定済み先頭語を再送した。
+  → クランプ値を `0` から `1px` に変更（横スクロール対策は維持しつつ xterm の IME 最小サイズ要件を満たす）。
+
 ### Phase 2a 実装（2026-05-31）— yak 自動インストール
 
 未導入時の手動 `yak install` ステップを排除する。`src/Panel/RhinoMcpInstaller.cs` を追加。

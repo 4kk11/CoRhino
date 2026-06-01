@@ -79,12 +79,17 @@ style.textContent = `
   #terminal { width: 100%; height: 100%; padding: 4px; box-sizing: border-box; overflow: hidden; }
   .xterm, .xterm-viewport { background: #111 !important; }
 ${isWindowsWebView2 ? `
-  /* During Japanese IME composition the helper textarea grows to fit the composing text.
-     On Chromium/WebView2 (unlike macOS WKWebView) that growth bubbles up as document
-     overflow, scrolling the whole panel sideways. Clipping the helper textarea keeps
-     the layout stable and prevents the cascade into FitAddon → PTY resize → TUI redraw.
-     macOS is excluded: there the clamp causes dropped keystrokes instead. */
-  .xterm-helper-textarea { max-width: 0; max-height: 0; overflow: hidden !important; }
+  /* During Japanese IME composition xterm grows the helper textarea to fit the composing
+     text (CompositionHelper.updateCompositionElements). On Chromium/WebView2 (unlike macOS
+     WKWebView) that growth bubbles up as document overflow, scrolling the whole panel
+     sideways and cascading into FitAddon → PTY resize → TUI redraw.
+     We cap the textarea at 1x1 px to stop the growth WITHOUT zeroing it. xterm itself
+     guarantees a 1x1 minimum (Math.max(bounds, 1)) because "certain IMEs may break" at 0x0.
+     A 0x0 clamp hit exactly that break: the Windows IME re-emitted the first committed word
+     on every later composition (日本語日本語日本語…) and never committed the new ones.
+     1x1 keeps the layout stable and the IME working.
+     macOS is excluded: there any clamp causes dropped keystrokes instead. */
+  .xterm-helper-textarea { max-width: 1px; max-height: 1px; overflow: hidden !important; }
 ` : ''}
 `
 document.head.appendChild(style)

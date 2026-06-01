@@ -273,7 +273,9 @@ WebView の準備（`ready` メッセージ）が来る前に PTY 出力が届�
   （"rhino"→"rhn", xterm #5374）。capture-phase の `keydown` で印字可能キーを先取りして `term.input()` に流し、
   `input`/`beforeinput` を握り潰す。IME 合成中は素通し（日本語入力を壊さない）。
 - **Windows の IME 対策**（[main.ts:81](../ui/src/main.ts#L81)）: 合成中に helper textarea が伸びてパネルが横スクロールするのを、
-  textarea を 0×0 にクランプして防ぐ（macOS では逆効果なので Windows 限定）。
+  textarea を **1×1 px** にクランプして防ぐ（macOS では逆効果なので Windows 限定）。0×0 は xterm が「IME が壊れる」と警告する条件
+  （`CompositionHelper` は `Math.max(bounds, 1)` で 1px 下限を保証）で、0×0 にすると日本語 IME が確定済みの先頭語を毎回再送する
+  重複バグが出た（→ [design-history.md](design-history.md)）。1×1 は横スクロール対策と IME 動作を両立する。
 - **リサイズのデバウンス**（[main.ts:198](../ui/src/main.ts#L198)）: `ResizeObserver` → 80ms デバウンス → `fit()`。
   paint→scrollbar→resize→repaint のフィードバックループを断つ。
 
