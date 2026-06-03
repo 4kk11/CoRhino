@@ -1,13 +1,18 @@
 # 入出力フロー: xterm ⇄ PTY
 
 xterm.js（WebView 内 UI）で入力したテキストが PTY（＝claude の stdin）へ流れる過程と、PTY の出力が xterm へ
-反映される過程を、コードを正本として追ったもの。記述はすべて `ファイル:行` 付き（2026-05-31 時点）。
+反映される過程を、コードを正本として追ったもの。記述はすべて `ファイル:行` 付き（2026-06-03 時点）。
 
 この2方向は**経路が非対称**である点が最大のポイント:
 - 入力は **JSON を `postMessage`** で C# に渡す。
 - 出力は **JS 関数呼び出しを文字列で注入**（`ExecuteScriptAsync`）して UI に渡す。
 
-全体のアーキテクチャは [`architecture.md`](../architecture.md)（特に 3.2〜3.4）を参照。
+**タブ多重化（D7）**: 1パネルは複数タブ＝複数 claude を並列に持つため、入出力メッセージは
+**`agentId` でどのタブ宛か**を区別する。入力 `{type:'stdin', agentId, data}`、出力 `onPtyData(agentId, text)`。
+C# 側は `Dictionary<string, AgentTab> _tabs` で agentId → PtySession を引く。以下は1タブ分の流れを追うが、
+各ステップに agentId が乗る点だけ全タブ共通。
+
+全体のアーキテクチャは [`architecture.md`](../architecture.md)（特に 3.2〜3.4、5.2）を参照。
 
 ---
 
@@ -38,14 +43,16 @@ sequenceDiagram
 
 ### ステップ詳解
 
-1. **`onData` が唯一の入口** — xterm は確定した入力文字列を `onData` で出す。
-   `term.onData((data) => post({ type: 'stdin', data }))`（[main.ts:126](../../ui/src/main.ts#L126)）。
-   ここに来るのは「タイプした文字」「ペースト」「IME 確定後の文字列」「制御キー（矢印 = ESC シーケンス等）」すべて。
+1. **`onData` が唯一の入口** — xterm は確定した入力文字列を `onData` で出す。各タブ生成時に
+   `term.onData((data) => post({ type: 'stdin', agentId, data }))` を**そのタブの agentId を閉じ込めて**配線する
+   （`addTab` 内, [main.ts](../../ui/src/main.ts)）。ここに来るのは「タイプした文字」「ペースト」「IME 確定後の文字列」
+   「制御キー（矢印 = ESC シーケンス等）」すべて。
 
    - **macOS の特殊経路**: WKWebView の helper textarea が高速打鍵で文字を落とす不具合（"rhino"→"rhn"）への対策として、
-     capture-phase の `keydown` で印字可能キーを先取りし `term.input(e.key, true)` に流す（[main.ts:156-162](../../ui/src/main.ts#L156)）。
+     capture-phase の `keydown` で印字可能キーを先取りし**アクティブタブの** `term.input(e.key, true)` に流す。
      `term.input()` は内部的に `onData` を発火させるので、**入口が `onData` に一本化される点は変わらない**。
-     同時に textarea の `input`/`beforeinput` を握り潰し（[main.ts:172-179](../../ui/src/main.ts#L172)）、二重入力（"rrhhiinnoo"）を防ぐ。IME 合成中は素通し。
+     同時に textarea の `input`/`beforeinput` を握り潰し、二重入力（"rrhhiinnoo"）を防ぐ。IME 合成中は素通し。
+     フォーカスは常にアクティブタブのみなので、リスナーは `activeTab` を都度解決する。
    - Windows/WebView2 は xterm 既定経路（textarea → onData）。
 
 2. **ブリッジ選択 `post()`** — 環境ごとに送信口が違うのを吸収（[main.ts:22-45](../../ui/src/main.ts#L22)）。
@@ -54,12 +61,14 @@ sequenceDiagram
    - Windows → `window.chrome.webview.postMessage(s)`（WebView2）
    - レガシー → `window.external.notify(s)`
 
-3. **C# 側の受信** — コンストラクタで購読した `_webView.MessageReceived += OnMessageReceived`（[CoRhinoPanel.cs:42](../../src/Panel/CoRhinoPanel.cs#L42)）。
-   `OnMessageReceived` が `e.Message`（JSON 文字列）を `JsonDocument.Parse` し、`type` で分岐（[CoRhinoPanel.cs:287](../../src/Panel/CoRhinoPanel.cs#L287)）。
-   `case "stdin"` で `data` を取り出し、**UTF-8 でバイト列化**して PTY へ:
+3. **C# 側の受信** — コンストラクタで購読した `_webView.MessageReceived += OnMessageReceived`。
+   `OnMessageReceived` が `e.Message`（JSON 文字列）を `JsonDocument.Parse` し、`type` で分岐。
+   `case "stdin"` で `TryGetTab(root, out tab)` が **`agentId` から該当タブを引き**、`data` を取り出して
+   **UTF-8 でバイト列化**しそのタブの PTY へ:
    ```csharp
-   _session.Write(Encoding.UTF8.GetBytes(s));   // CoRhinoPanel.cs:308
+   stdinTab.Session.Write(Encoding.UTF8.GetBytes(s));
    ```
+   未知の agentId（既に閉じたタブ等）は黙ってドロップされる。
 
 4. **PTY への書き込み** — `PtySession.Write`（[PtySession.cs:109](../../src/Pty/PtySession.cs#L109)）が PTY マスターの書き込み側へ:
    ```csharp
@@ -87,14 +96,14 @@ sequenceDiagram
 
     CL-->>RL: stdout バイト列
     RL->>RL: ReaderStream.ReadAsync(4096)
-    RL->>OP: DataReceived(chunk: byte[])
+    RL->>OP: DataReceived(chunk) → OnPtyData(agentId, chunk)
     OP->>OP: UTF8.GetString(chunk)
     OP->>UIth: Application.Instance.AsyncInvoke
     alt WebView 未 ready
-        UIth->>UIth: _pendingOutput にキュー
+        UIth->>UIth: tab.Pending にキュー（タブ別）
     else ready 済み
-        UIth->>WV: onPtyData("...") を注入
-        WV->>X: term.write(text)
+        UIth->>WV: onPtyData(agentId, "...") を注入
+        WV->>X: 該当タブの term.write(text)
     end
 ```
 
@@ -111,34 +120,36 @@ sequenceDiagram
    ```
    claude が出す表示（ANSI エスケープ込み）がこの生バイト列。
 
-2. **イベント配線** — `WireSession` で `session.DataReceived += OnPtyData`（[CoRhinoPanel.cs:91](../../src/Panel/CoRhinoPanel.cs#L91)）。
+2. **イベント配線** — `WireSession(tab)` で `tab.Session.DataReceived += data => OnPtyData(agentId, data)`。
+   その PtySession の agentId を閉じ込めて配線するので、出力がどのタブ由来か常に判る。
    `DataReceived` は**背景スレッド**で発火するので、ここから UI スレッドへ戻す必要がある。
 
-3. **C# → UI への中継 `OnPtyData`**（[CoRhinoPanel.cs:334](../../src/Panel/CoRhinoPanel.cs#L334)）:
+3. **C# → UI への中継 `OnPtyData(agentId, data)`**:
    ```csharp
    var s = Encoding.UTF8.GetString(data);              // バイト→文字列
    Application.Instance?.AsyncInvoke(() =>              // UI スレッドへマーシャリング
    {
-       if (!_webReady) { _pendingOutput.Enqueue(s); return; }   // ready 前はキュー
-       var encoded = JsonSerializer.Serialize(s);      // JS 文字列リテラルに安全変換
-       _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onPtyData({encoded})");
+       if (!_tabs.TryGetValue(agentId, out var tab)) return;    // 既に閉じたタブは捨てる
+       if (!_webReady) { tab.Pending.Enqueue(s); return; }      // ready 前はタブ別キュー
+       WriteToTab(agentId, s);                          // onPtyData(agentId, s) を注入
    });
    ```
-   - **`JsonSerializer.Serialize(s)`** が肝。出力文字列を JSON 文字列（＝ JS の文字列リテラル）にエスケープして、
-     `onPtyData("...")` という**実行 JS コードに埋め込む**。これにより改行・引用符・ANSI 制御文字が壊れずに渡る。
+   - `WriteToTab` が `JsonSerializer.Serialize` で agentId と本文を JS 文字列リテラルに安全変換し、
+     `window.CoRhinoPanel?.onPtyData(<id>, <text>)` という**実行 JS コードに埋め込む**。これで改行・引用符・
+     ANSI 制御文字が壊れずに渡る。
    - 入力が「JSON を postMessage」だったのに対し、**出力は「JS 関数呼び出しを文字列で注入」** という非対称な経路。
      C#→JS を呼ぶ標準手段が `ExecuteScriptAsync`（任意 JS を実行）だから。
 
-4. **WebView 準備前のバッファリング** — claude は WebView の `ready` 通知より早く出力し始めることがある。
-   `_webReady` が立つまで `_pendingOutput` キューに溜め、`ready` 受信時に `FlushPending` でまとめて流す
-   （[CoRhinoPanel.cs:297](../../src/Panel/CoRhinoPanel.cs#L297), [:349](../../src/Panel/CoRhinoPanel.cs#L349)）。これで起動直後のバナー出力が欠けない。
+4. **WebView 準備前のバッファリングはタブ別** — claude は WebView の `ready` 通知（やタブ生成）より早く出力し
+   始めることがある。`_webReady` が立つまで**そのタブの `tab.Pending`** キューに溜め、`ready` 受信時に各タブを
+   `onTabCreated` で announce してから `FlushPending(tab)` でまとめて流す。これで起動直後のバナー出力が欠けない。
 
-5. **UI 側で描画** — 注入された JS が `window.CoRhinoPanel.onPtyData` を呼ぶ（[main.ts:183](../../ui/src/main.ts#L183)）:
+5. **UI 側で描画** — 注入された JS が `window.CoRhinoPanel.onPtyData(agentId, text)` を呼ぶ:
    ```ts
-   onPtyData(text: string) { term.write(text) }
+   onPtyData(agentId, text) { tabs.get(agentId)?.term.write(text) }
    ```
-   `term.write` が ANSI エスケープを解釈してターミナルに描画する。`convertEol: true`（[main.ts:104](../../ui/src/main.ts#L104)）で、
-   Windows ConPTY が出す bare `\n` を `\r\n` に合成し階段化を防ぐ。
+   該当タブの `term.write` が ANSI エスケープを解釈して描画する。`convertEol: true` で、Windows ConPTY が出す
+   bare `\n` を `\r\n` に合成し階段化を防ぐ。
 
 ---
 
@@ -150,16 +161,19 @@ sequenceDiagram
 | データ形式 | 文字列 →**UTF-8 バイト**化して PTY へ | **UTF-8 バイト**→文字列化して JS へ |
 | スレッド | WebView コールバック（UI スレッド）→ そのまま Write | 背景 ReadLoop →`AsyncInvoke`で UI スレッドへ |
 | 入口の一本化 | `onData`（macOS 先取りも最終的に onData） | `term.write` |
-| バッファリング | なし | `_webReady` 前は `_pendingOutput` |
+| バッファリング | なし | `_webReady` 前は `tab.Pending`（タブ別） |
+| タブ多重化 | `{type:'stdin', agentId, …}` で振り分け | `onPtyData(agentId, …)` で振り分け |
 
 ---
 
 ## 正確さのために挙げる注意点（コード上の事実）
 
 - **マルチバイト文字の境界割れ**: `ReadLoop` は 4096 バイト単位で読み、`OnPtyData` が**チャンクごとに独立して**
-  `Encoding.UTF8.GetString(data)` する（[CoRhinoPanel.cs:336](../../src/Panel/CoRhinoPanel.cs#L336)）。日本語など複数バイト文字が 4096 境界をまたぐと、
-  そのチャンク端で文字化けし得る。現状コードにはチャンク跨ぎのバイト保持（デコーダの状態保持）が無い。
+  `Encoding.UTF8.GetString(data)` する。日本語など複数バイト文字が 4096 境界をまたぐと、そのチャンク端で
+  文字化けし得る。現状コードにはチャンク跨ぎのバイト保持（デコーダの状態保持）が無い。
   実用上は claude の出力単位が小さく顕在化しにくいが、**設計上の弱点として残っている**。
 - **入力時のバイト境界は問題にならない**: 入力は文字列全体を一括 `GetBytes` してから書くので割れない。
 - **終了直後の入力は捨てられる**: `Write` は `_connection==null` を黙殺するので、セッション終了直後に届いた入力は
   破棄される（再起動は別経路 ＝ `EnsureSessionAlive`）。
+- **未知 agentId のドロップ**: 既に閉じたタブ宛の `stdin`/出力は、`_tabs` に無いため黙って捨てられる
+  （タブの×やプロセス終了と入出力が競合してもクラッシュしない）。

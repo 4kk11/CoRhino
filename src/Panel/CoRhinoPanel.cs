@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -14,20 +15,43 @@ namespace CoRhino.Panel
     [System.Runtime.InteropServices.Guid("4C13D5E0-9E5A-4F18-9C2A-1E9E1A7B3C02")]
     public class CoRhinoPanel : Eto.Forms.Panel
     {
+        // One running claude agent inside this panel. Several can run in parallel —
+        // one per UI tab — all sharing the panel's single RhinoMCP host port. Each
+        // has its own PTY, its own session dir/cwd, and a private layer prefix so
+        // parallel agents write into disjoint Rhino layers.
+        sealed class AgentTab
+        {
+            public required string AgentId;
+            public required string LayerPrefix;
+            public PtySession Session = new();
+            // True from spawn until StartSession finishes wiring. Counts as "alive"
+            // so EnsureSessionAlive doesn't respawn a tab whose PTY is still coming up
+            // (IsRunning is false until SpawnAsync returns). Set on the background
+            // launch thread, read on the UI thread → volatile.
+            public volatile bool Starting;
+            // Output produced before the WebView is ready (and thus before the tab's
+            // xterm exists). Drained on 'ready' / right after the tab is announced.
+            public readonly Queue<string> Pending = new();
+        }
+
         readonly WebView _webView;
-        PtySession _session = new();
-        readonly System.Collections.Generic.Queue<string> _pendingOutput = new();
+        // agentId -> tab. Mutated only on the UI thread (message handlers and the
+        // AsyncInvoke'd PTY callbacks), so no extra locking is needed.
+        readonly Dictionary<string, AgentTab> _tabs = new();
+        // Monotonic agent counter; tab N is "agent-N". Never reused within a panel
+        // lifetime so two tabs never collide on a session dir or layer.
+        int _nextAgentNum = 1;
         bool _webReady;
-        // Guards EnsureSessionAlive against re-entrancy: the CoRhino command can fire
-        // again before a respawn finishes wiring, and we must not spawn two claudes.
-        int _starting;
+        // Guards the reopen respawn path (EnsureSessionAlive) against the CoRhino
+        // command firing again before a respawn finishes wiring.
+        int _respawning;
         // The document this panel instance is keyed to. Needed to close *this*
-        // panel (per-doc) when the claude session ends.
+        // panel (per-doc) when every agent has exited.
         readonly uint _documentSerialNumber;
 
         // The RhinoMCP host port this panel owns. Chosen once, free at construction
-        // time, so each Rhino instance gets a distinct endpoint. Both MCPStart and
-        // the generated .mcp.json use it, keeping claude bound to *this* Rhino.
+        // time, so each Rhino instance gets a distinct endpoint. The MCPSpawn and
+        // every tab's .mcp.json use it, keeping all agents bound to *this* Rhino.
         readonly int _hostPort = Workspace.ResolveFreePort();
 
         static readonly JsonSerializerOptions JsonOptions = new()
@@ -53,14 +77,12 @@ namespace CoRhino.Panel
             }
 #endif
 
-            WireSession(_session);
-
             // Start the in-process RhinoMCP HTTP host in *this* Rhino on our own
             // port, and keep it bound to the active document. The host is per-doc,
-            // so re-fire on open/new. claude connects to it via the session .mcp.json.
-            // If Rhino-MCP-Platform isn't installed there is no host to start, so run
-            // the install onboarding instead (Phase 2a) and skip MCPStart until the
-            // user restarts Rhino with the package present.
+            // so re-fire on open/new. All agents connect to it via their session
+            // .mcp.json. If Rhino-MCP-Platform isn't installed there is no host to
+            // start, so run the install onboarding instead (Phase 2a) and skip
+            // MCPStart until the user restarts Rhino with the package present.
             Log.Write($"[CoRhino] Selected host MCP port {_hostPort}.");
             RhinoDoc.EndOpenDocument += OnDocChangedRestartHost;
             RhinoDoc.NewDocument += OnDocChangedRestartHost;
@@ -77,90 +99,142 @@ namespace CoRhino.Panel
             Content = _webView;
             LoadWebView();
 
-            Log.Write("[CoRhino] Scheduling StartSession on background thread...");
-            // Claim the starting flag so an early CoRhino re-press can't respawn a
-            // second claude before the initial spawn has finished.
-            System.Threading.Interlocked.Exchange(ref _starting, 1);
-            LaunchSessionInBackground();
+            // Spawn the first agent. More are added on demand when the user clicks
+            // "+" in the tab bar (a 'createTab' message).
+            SpawnTab();
         }
 
-        // Subscribe to a (fresh) PtySession's events. Called for the initial session
-        // and for every respawn so the panel always tracks the live session.
-        void WireSession(PtySession session)
+        // Allocate the next agent id, register its tab, announce it to the UI (if
+        // ready), and start its claude in the background. Returns the new tab.
+        AgentTab SpawnTab()
         {
-            session.DataReceived += OnPtyData;
-            session.Exited += OnSessionExited;
+            var agentId = $"agent-{_nextAgentNum++}";
+            var tab = new AgentTab { AgentId = agentId, LayerPrefix = agentId, Starting = true };
+            _tabs[agentId] = tab;
+            WireSession(tab);
+
+            Log.Write($"[CoRhino] Spawning tab {agentId} (layer {tab.LayerPrefix}).");
+            AnnounceTab(agentId);
+            LaunchSessionInBackground(tab);
+            return tab;
         }
 
-        // claude exited (typically via /exit). The PtySession has already torn its
-        // connection down, so IsRunning is now false. Close this panel; re-running
-        // the CoRhino command reopens it and respawns via EnsureSessionAlive (the
-        // cached instance keeps its MCP host, port, and session dir).
-        void OnSessionExited(int code)
+        // Tell the UI to create an xterm for this agent. No-op until the WebView is
+        // ready; the 'ready' handler announces every existing tab once it boots.
+        void AnnounceTab(string agentId)
         {
-            Log.Write($"[CoRhino] PTY exited with code {code}; closing panel.");
+            if (!_webReady) return;
+            var encoded = JsonSerializer.Serialize(agentId);
             Application.Instance?.AsyncInvoke(() =>
-            {
-                try
-                {
-                    // ClosePanel takes (Guid, RhinoDoc); resolve this panel's doc from
-                    // its serial number. Falling back to ActiveDoc (null) would close
-                    // the wrong instance when multiple docs each host a panel.
-                    var doc = RhinoDoc.FromRuntimeSerialNumber(_documentSerialNumber);
-                    Rhino.UI.Panels.ClosePanel(typeof(CoRhinoPanel).GUID, doc);
-                }
-                catch (Exception ex)
-                {
-                    Log.Write($"[CoRhino] ClosePanel failed: {ex.GetType().Name}: {ex.Message}");
-                }
-            });
+                _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onTabCreated({encoded})"));
         }
 
-        void LaunchSessionInBackground()
+        // Subscribe to a tab's PtySession events. The *tab instance* is captured (not
+        // just its agentId) so a delayed callback from a disposed-and-reused id
+        // (agent-N can recur after a reopen) is matched by reference and dropped
+        // instead of mutating the new tab that now holds that id.
+        void WireSession(AgentTab tab)
+        {
+            tab.Session.DataReceived += data => OnPtyData(tab, data);
+            tab.Session.Exited += code => OnSessionExited(tab, code);
+        }
+
+        // A tab's claude exited (typically via /exit). Remove just that tab; the last
+        // tab's exit closes the whole panel. Re-running the CoRhino command reopens it
+        // and respawns a fresh agent via EnsureSessionAlive.
+        void OnSessionExited(AgentTab tab, int code)
+        {
+            Log.Write($"[CoRhino] Tab {tab.AgentId} PTY exited with code {code}.");
+            Application.Instance?.AsyncInvoke(() => RemoveTab(tab));
+        }
+
+        // The single teardown path for a tab, whatever triggered it (claude /exit,
+        // the user's "×", or a failed start). UI-thread only. Idempotent and
+        // identity-checked: if the id now maps to a *different* tab instance, this is
+        // a stale call and is ignored. Disposes the PtySession (safe even if it
+        // already exited), tells the UI to drop the xterm, and closes the panel once
+        // no tabs remain.
+        void RemoveTab(AgentTab tab)
+        {
+            if (!_tabs.TryGetValue(tab.AgentId, out var current) || !ReferenceEquals(current, tab))
+                return;
+            _tabs.Remove(tab.AgentId);
+            try { tab.Session.Dispose(); } catch { }
+            if (_webReady)
+            {
+                var encoded = JsonSerializer.Serialize(tab.AgentId);
+                _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onTabClosed({encoded})");
+            }
+            if (_tabs.Count == 0)
+                CloseThisPanel();
+        }
+
+        void CloseThisPanel()
+        {
+            try
+            {
+                // ClosePanel takes (Guid, RhinoDoc); resolve this panel's doc from
+                // its serial number. Falling back to ActiveDoc (null) would close
+                // the wrong instance when multiple docs each host a panel.
+                var doc = RhinoDoc.FromRuntimeSerialNumber(_documentSerialNumber);
+                Rhino.UI.Panels.ClosePanel(typeof(CoRhinoPanel).GUID, doc);
+            }
+            catch (Exception ex)
+            {
+                Log.Write($"[CoRhino] ClosePanel failed: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        void LaunchSessionInBackground(AgentTab tab)
         {
             System.Threading.Tasks.Task.Run(async () =>
             {
-                try { await StartSession().ConfigureAwait(false); }
+                try { await StartSession(tab).ConfigureAwait(false); }
                 catch (Exception ex)
                 {
-                    Log.Write($"[CoRhino] StartSession unhandled: {ex.GetType().Name}: {ex.Message}");
+                    Log.Write($"[CoRhino] StartSession({tab.AgentId}) unhandled: {ex.GetType().Name}: {ex.Message}");
                     Log.Write($"[CoRhino] Stack: {ex.StackTrace}");
                 }
-                finally { System.Threading.Interlocked.Exchange(ref _starting, 0); }
+                finally { tab.Starting = false; }
             });
         }
 
         /// <summary>
-        /// Called by the CoRhino command after (re)opening the panel. If the claude
-        /// session is still alive this is a no-op (the panel just comes to front).
-        /// If it exited (e.g. the user typed /exit), spawn a fresh session in the
-        /// existing panel — reusing this instance's MCP host, port, and session dir.
+        /// Called by the CoRhino command after (re)opening the panel. If any agent is
+        /// still alive this is a no-op (the panel just comes to front). If every agent
+        /// exited (e.g. the user typed /exit in the last tab), spawn one fresh agent
+        /// in the existing panel — reusing this instance's MCP host and port.
         /// </summary>
         public void EnsureSessionAlive()
         {
-            if (_session.IsRunning) return;
-            // Win the right to restart exactly once; a second command press while a
+            // Starting counts as alive: a freshly-constructed panel calls this right
+            // after the constructor's SpawnTab, while agent-1's PTY is still coming up
+            // (IsRunning false until SpawnAsync returns). Without the Starting guard we
+            // would clear and double-spawn agent-1.
+            if (_tabs.Values.Any(t => t.Session.IsRunning || t.Starting)) return;
+            // Win the right to respawn exactly once; a second command press while a
             // respawn is mid-flight is ignored.
-            if (System.Threading.Interlocked.Exchange(ref _starting, 1) != 0) return;
-
-            Log.Write("[CoRhino] Session not running; respawning claude in existing panel.");
-            var old = _session;
-            old.Dispose();
-
-            var session = new PtySession();
-            WireSession(session);
-            _session = session;
-
-            // Drop any output buffered from the dead session and clear the terminal
-            // so the new claude paints onto a clean screen.
-            _pendingOutput.Clear();
-            Application.Instance?.AsyncInvoke(() =>
+            if (System.Threading.Interlocked.Exchange(ref _respawning, 1) != 0) return;
+            try
             {
-                if (_webReady)
-                    _ = _webView.ExecuteScriptAsync("window.CoRhinoPanel?.onSessionRestart()");
-            });
+                Log.Write("[CoRhino] No agents running; respawning a fresh agent in existing panel.");
 
-            LaunchSessionInBackground();
+                // Drop any dead tabs and wipe the terminal so the new claude paints
+                // onto a clean screen.
+                foreach (var t in _tabs.Values) t.Session.Dispose();
+                _tabs.Clear();
+                Application.Instance?.AsyncInvoke(() =>
+                {
+                    if (_webReady)
+                        _ = _webView.ExecuteScriptAsync("window.CoRhinoPanel?.onTabsReset()");
+                });
+
+                // Reuse agent-1 so the reopened session keeps its layer prefix, its
+                // seeded CLAUDE.md, and its claude history (cwd-keyed).
+                _nextAgentNum = 1;
+                SpawnTab();
+            }
+            finally { System.Threading.Interlocked.Exchange(ref _respawning, 0); }
         }
 
         void LoadWebView()
@@ -185,24 +259,25 @@ namespace CoRhino.Panel
             Log.Write($"[CoRhino] LoadHtml invoked, html length={html.Length}");
         }
 
-        async System.Threading.Tasks.Task StartSession()
+        async System.Threading.Tasks.Task StartSession(AgentTab tab)
         {
-            Log.Write("[CoRhino] StartSession() entered.");
+            Log.Write($"[CoRhino] StartSession({tab.AgentId}) entered.");
             try
             {
                 var (claudePath, loginPath) = CliResolver.Resolve();
-                var cwd = Workspace.EnsureSession(_hostPort);
+                var cwd = Workspace.EnsureSession(_hostPort, tab.AgentId, tab.LayerPrefix);
 
-                var env = new System.Collections.Generic.Dictionary<string, string>();
+                var env = new Dictionary<string, string>();
                 if (!string.IsNullOrEmpty(loginPath)) env["PATH"] = loginPath!;
 
-                // Load ONLY this session's RhinoMCP config (which points at this
-                // instance's host port) and ignore the user's global/project MCP
-                // settings, so claude talks to this Rhino and nothing leaks in.
+                // Load ONLY this agent's RhinoMCP config (which points at this
+                // instance's host port and carries this agent's header) and ignore
+                // the user's global/project MCP settings, so claude talks to this
+                // Rhino and nothing leaks in.
                 var claudeArgs = new[]
                 {
                     "--strict-mcp-config",
-                    "--mcp-config", Workspace.McpConfigPath(_hostPort),
+                    "--mcp-config", Workspace.McpConfigPath(_hostPort, tab.AgentId),
                 };
 
                 var isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
@@ -211,7 +286,7 @@ namespace CoRhino.Panel
                     var fallbackApp = isWindows ? "cmd.exe" : "/bin/bash";
                     var fallbackArgs = isWindows ? Array.Empty<string>() : new[] { "-l" };
                     Log.Write($"[CoRhino] `claude` CLI not found on PATH. Falling back to {fallbackApp}. PATH=" + (loginPath ?? "<none>"));
-                    await _session.StartAsync(fallbackApp, fallbackArgs, cwd, env).ConfigureAwait(false);
+                    await tab.Session.StartAsync(fallbackApp, fallbackArgs, cwd, env).ConfigureAwait(false);
                     Log.Write($"[CoRhino] {fallbackApp} spawned in {cwd}");
                 }
                 else
@@ -221,11 +296,11 @@ namespace CoRhino.Panel
                     {
                         // Only .exe can be launched directly by CreateProcess on Windows.
                         // .cmd / .bat / extensionless shell-shims (npm, fnm) must go through cmd.exe.
-                        await _session.StartAsync("cmd.exe", new[] { "/c", claudePath! }.Concat(claudeArgs).ToArray(), cwd, env).ConfigureAwait(false);
+                        await tab.Session.StartAsync("cmd.exe", new[] { "/c", claudePath! }.Concat(claudeArgs).ToArray(), cwd, env).ConfigureAwait(false);
                     }
                     else
                     {
-                        await _session.StartAsync(claudePath!, claudeArgs, cwd, env).ConfigureAwait(false);
+                        await tab.Session.StartAsync(claudePath!, claudeArgs, cwd, env).ConfigureAwait(false);
                     }
                     Log.Write($"[CoRhino] claude spawned in {cwd}");
                 }
@@ -236,6 +311,9 @@ namespace CoRhino.Panel
                 Log.Write($"[CoRhino] Stack: {ex.StackTrace}");
                 if (ex.InnerException != null)
                     Log.Write($"[CoRhino] Inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
+                // The spawn failed, so this tab has no live PTY. Drop it (and close the
+                // panel if it was the only one) rather than leaving a dead tab behind.
+                Application.Instance?.AsyncInvoke(() => RemoveTab(tab));
             }
         }
 
@@ -290,30 +368,48 @@ namespace CoRhino.Panel
             {
                 using var doc = JsonDocument.Parse(e.Message);
                 var root = doc.RootElement;
-                var type = root.GetProperty("type").GetString();
+                if (!root.TryGetProperty("type", out var typeEl)) return;
+                var type = typeEl.GetString();
 
                 switch (type)
                 {
                     case "ready":
                         _webReady = true;
                         Log.Write("[CoRhino] WebView ready.");
-                        FlushPending();
+                        // Announce every tab that was spawned before the UI booted,
+                        // then drain its buffered output onto the now-existing xterm.
+                        foreach (var tab in _tabs.Values)
+                        {
+                            AnnounceTab(tab.AgentId);
+                            FlushPending(tab);
+                        }
+                        break;
+
+                    case "createTab":
+                        SpawnTab();
+                        break;
+
+                    case "closeTab":
+                        if (root.TryGetProperty("agentId", out var closeIdEl))
+                            CloseTab(closeIdEl.GetString());
                         break;
 
                     case "stdin":
-                        if (root.TryGetProperty("data", out var dataEl))
+                        if (TryGetTab(root, out var stdinTab) &&
+                            root.TryGetProperty("data", out var dataEl))
                         {
                             var s = dataEl.GetString();
                             if (s != null)
-                                _session.Write(Encoding.UTF8.GetBytes(s));
+                                stdinTab!.Session.Write(Encoding.UTF8.GetBytes(s));
                         }
                         break;
 
                     case "resize":
-                        if (root.TryGetProperty("cols", out var colsEl) &&
+                        if (TryGetTab(root, out var resizeTab) &&
+                            root.TryGetProperty("cols", out var colsEl) &&
                             root.TryGetProperty("rows", out var rowsEl))
                         {
-                            _session.Resize(colsEl.GetInt32(), rowsEl.GetInt32());
+                            resizeTab!.Session.Resize(colsEl.GetInt32(), rowsEl.GetInt32());
                         }
                         break;
 
@@ -325,35 +421,62 @@ namespace CoRhino.Panel
                         break;
                 }
             }
-            catch (JsonException ex)
+            catch (Exception ex)
             {
-                Log.Write($"[CoRhino] WebView JSON parse error: {ex.Message}");
+                // A malformed / version-skewed message (missing field, wrong JSON type)
+                // must not tear down the message pump. Log and drop the one message.
+                Log.Write($"[CoRhino] WebView message handling error: {ex.GetType().Name}: {ex.Message}");
             }
         }
 
-        void OnPtyData(byte[] data)
+        // Resolve the tab an inbound message targets via its "agentId" field.
+        bool TryGetTab(JsonElement root, out AgentTab? tab)
+        {
+            tab = null;
+            if (!root.TryGetProperty("agentId", out var idEl)) return false;
+            var id = idEl.GetString();
+            return id != null && _tabs.TryGetValue(id, out tab);
+        }
+
+        // User closed a tab via its "×". Disposing the PtySession suppresses its
+        // Exited event (so OnSessionExited will NOT fire), so we must drive the
+        // teardown directly via RemoveTab — which disposes the session, drops the
+        // xterm, and closes the panel if this was the last tab.
+        void CloseTab(string? agentId)
+        {
+            if (agentId == null || !_tabs.TryGetValue(agentId, out var tab)) return;
+            Log.Write($"[CoRhino] Closing tab {agentId} by user request.");
+            RemoveTab(tab);
+        }
+
+        void OnPtyData(AgentTab tab, byte[] data)
         {
             var s = Encoding.UTF8.GetString(data);
             Application.Instance?.AsyncInvoke(() =>
             {
+                // Drop output from a stale session whose id has since been reused.
+                if (!_tabs.TryGetValue(tab.AgentId, out var current) || !ReferenceEquals(current, tab))
+                    return;
                 if (!_webReady)
                 {
-                    _pendingOutput.Enqueue(s);
+                    tab.Pending.Enqueue(s);
                     return;
                 }
-                var encoded = JsonSerializer.Serialize(s);
-                _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onPtyData({encoded})");
+                WriteToTab(tab.AgentId, s);
             });
         }
 
-        void FlushPending()
+        void WriteToTab(string agentId, string s)
         {
-            while (_pendingOutput.Count > 0)
-            {
-                var s = _pendingOutput.Dequeue();
-                var encoded = JsonSerializer.Serialize(s);
-                _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onPtyData({encoded})");
-            }
+            var encodedId = JsonSerializer.Serialize(agentId);
+            var encoded = JsonSerializer.Serialize(s);
+            _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onPtyData({encodedId}, {encoded})");
+        }
+
+        void FlushPending(AgentTab tab)
+        {
+            while (tab.Pending.Count > 0)
+                WriteToTab(tab.AgentId, tab.Pending.Dequeue());
         }
 
         protected override void Dispose(bool disposing)
@@ -362,7 +485,8 @@ namespace CoRhino.Panel
             {
                 RhinoDoc.EndOpenDocument -= OnDocChangedRestartHost;
                 RhinoDoc.NewDocument -= OnDocChangedRestartHost;
-                _session.Dispose();
+                foreach (var tab in _tabs.Values) tab.Session.Dispose();
+                _tabs.Clear();
             }
             base.Dispose(disposing);
         }

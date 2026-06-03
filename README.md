@@ -17,11 +17,12 @@ CoRhino はその**パネル UX・起動配線・オンボーディング**だ�
 Rhino プロセス
 ├── CoRhino プラグイン (.rhp, C#)
 │   ├── "CoRhino" コマンド → サイドパネルを開く
-│   └── パネル = WebView + xterm.js に PTY 経由の claude を表示
+│   └── パネル = WebView + xterm.js (タブ式) に PTY 経由の claude を表示
 │        ├─ インスタンス専用ポートを採番 (base 10500)
-│        ├─ ~/.corhino/sessions/<port>/ を用意 (CLAUDE.md + .mcp.json を seed)
-│        ├─ RhinoMCP ホストを MCPSpawn でそのポートに起動
-│        └─ claude を session cwd で spawn
+│        ├─ RhinoMCP ホストを MCPSpawn でそのポートに起動 (1パネル=1ホスト)
+│        └─ タブごと (= エージェント) に claude を並列起動
+│             ├─ ~/.corhino/sessions/<port>/<agentId>/ を用意 (CLAUDE.md + .mcp.json)
+│             └─ 全タブが同じ http://localhost:<port>/ に接続 (同じ doc を操作)
 └── Rhino-MCP-Platform プラグイン (.rhp)
      └── http://localhost:<port>/ で MCP ホストを提供
 ```
@@ -30,6 +31,10 @@ Rhino プロセス
   直接つながる。node router は使わない（パネルの意味論は「ドックされた“この”Rhino を操作」）。
 - **インスタンス単位のポート**: パネルごとに空きポートを採番するので、複数ドキュメントでも
   各パネルが自分の Rhino を操作する。
+- **1 ドキュメントに複数 claude（並列エージェント）**: 1パネル内のタブを「＋」で増やすと、
+  複数の claude が同じ Rhino を並列に操作する。RhinoMCP ホストはステートレスでツール実行を
+  UI スレッドで直列化するため安全。各エージェントには専用レイヤ（`agent-1/` …）が割り当てられ、
+  書き込みが衝突しないようになっている。
 - **セッション隔離**: claude は `--strict-mcp-config --mcp-config <session>/.mcp.json` で
   起動し、ユーザーのグローバル/プロジェクト MCP 設定を読み込まない。`~/.claude` を汚さない。
 - **MCP ホスト起動**: `RHINO_MCP_AUTOSTART_PORT` をセットして hidden コマンド `_-MCPSpawn`
@@ -65,13 +70,25 @@ dotnet build src/CoRhino.csproj
 3. 初回、Rhino-MCP-Platform が無ければ導入の同意ダイアログが出る → インストール後に Rhino 再起動
 4. パネル内の Claude Code に「今のドキュメントに何がある？」のように指示する
 
+### 並列エージェント（タブ）
+
+タブバーの「＋」で **同じ Rhino ドキュメントに対して claude をもう1つ**起動できる。各タブは
+独立した Claude セッション（別 cwd・別履歴）で、専用レイヤ接頭辞（`agent-1/`, `agent-2/` …）が
+割り当てられる。各エージェントは自分のレイヤ配下にだけ書き込み、他レイヤは読み取りのみとする
+規約で動くので、並列で別々の作業（例: 片方がジオメトリ生成、片方が解析）を進めても衝突しにくい。
+タブの「×」でそのエージェントだけ終了できる。
+
+> 注意: レイヤ分離は CLAUDE.md による**規約**であり、ホストが強制するわけではない。同じオブジェクトを
+> 跨いで触ると論理衝突し得る。また各エージェントは互いの変更をリアルタイムには知らない（最新状態は
+> 都度問い合わせる）。
+
 ### セッションの終了と再起動
 
-パネル内で `/exit`（または `Ctrl-D` 等）で Claude Code を終了すると、PTY とプロセスが
-後始末され、**パネルは自動で閉じる**。もう一度 `CoRhino` コマンドを実行すると、
-パネルが再び開き、**新しい Claude セッションが起動する**（このインスタンスの MCP
-ホスト・ポート・セッションディレクトリはそのまま再利用される）。セッションが
-生きている間に `CoRhino` を実行した場合はパネルが前面に来るだけ。
+パネル内で `/exit`（または `Ctrl-D` 等）で Claude Code を終了すると、そのタブの PTY とプロセスが
+後始末され、タブが閉じる。**最後のタブが終了するとパネルも自動で閉じる**。もう一度 `CoRhino`
+コマンドを実行すると、パネルが再び開き、**新しい Claude セッションが起動する**（このインスタンスの
+MCP ホスト・ポートはそのまま再利用される）。セッションが生きている間に `CoRhino` を実行した
+場合はパネルが前面に来るだけ。
 
 ## プロジェクト構成
 
@@ -80,8 +97,8 @@ src/                        C# Rhino プラグイン
 ├── CoRhinoPlugin.cs        プラグイン本体（起動時ロード、パネル登録）
 ├── Commands/               "CoRhino" コマンド（パネルを開く）
 ├── Panel/
-│   ├── CoRhinoPanel.cs     WebView + xterm.js、ポート採番、claude 起動、MCP ホスト起動
-│   ├── Workspace.cs        ~/.corhino/sessions/<port>/ と .mcp.json / CLAUDE.md の seed
+│   ├── CoRhinoPanel.cs     WebView + xterm.js (タブ式)、ポート採番、複数 claude 起動、MCP ホスト起動
+│   ├── Workspace.cs        ~/.corhino/sessions/<port>/<agentId>/ と .mcp.json / CLAUDE.md の seed
 │   └── RhinoMcpInstaller.cs  Rhino-MCP-Platform の yak オンボーディング
 ├── Pty/                    PTY セッション（Porta.Pty）と claude CLI 解決
 └── Resources/icon.png      パネルアイコン

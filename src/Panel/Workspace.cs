@@ -6,12 +6,16 @@ using System.Net.Sockets;
 namespace CoRhino.Panel
 {
     /// <summary>
-    /// Owns the per-Rhino-instance working directory the embedded Claude session
-    /// runs in. The session does not follow the active .3dm; instead each panel
-    /// gets a stable session dir keyed by the host MCP port it owns, so two Rhinos
-    /// running side by side never share a cwd, a claude history, or — critically —
-    /// an MCP endpoint. Each session dir carries its own CLAUDE.md (from the shared
-    /// template) and a .mcp.json pointing at *that* Rhino's host.
+    /// Owns the per-agent working directories the embedded Claude sessions run in.
+    /// A panel hosts one RhinoMCP port (its Rhino instance) but can run several
+    /// claude agents in parallel against it — one per tab. Each agent gets its own
+    /// session dir under that port, so agents never share a cwd or a claude history,
+    /// yet all point their .mcp.json at the *same* host port (the host is stateless
+    /// and serializes tool calls on the UI thread, so multiple agents safely operate
+    /// the one document). Each agent's .mcp.json carries a distinct
+    /// <c>X-CoRhino-Agent</c> header for future host-side attribution, and its
+    /// CLAUDE.md is seeded with a private layer prefix so parallel agents write into
+    /// disjoint layers and don't clobber each other.
     /// </summary>
     static class Workspace
     {
@@ -27,10 +31,13 @@ namespace CoRhino.Panel
             }
         }
 
-        /// <summary>~/.corhino/sessions/&lt;port&gt; — this instance's cwd.</summary>
-        public static string SessionRoot(int port) => Path.Combine(BaseDir, "sessions", port.ToString());
+        /// <summary>~/.corhino/sessions/&lt;port&gt; — this panel's (Rhino instance's) root.</summary>
+        public static string PortRoot(int port) => Path.Combine(BaseDir, "sessions", port.ToString());
 
-        public static string McpConfigPath(int port) => Path.Combine(SessionRoot(port), ".mcp.json");
+        /// <summary>~/.corhino/sessions/&lt;port&gt;/&lt;agentId&gt; — one agent's cwd.</summary>
+        public static string AgentSessionRoot(int port, string agentId) => Path.Combine(PortRoot(port), agentId);
+
+        public static string McpConfigPath(int port, string agentId) => Path.Combine(AgentSessionRoot(port, agentId), ".mcp.json");
 
         /// <summary>
         /// Find a free TCP port for this Rhino's MCP host, starting at
@@ -63,41 +70,48 @@ namespace CoRhino.Panel
         }
 
         /// <summary>
-        /// Create this instance's session dir and (re)write its files. CLAUDE.md is
-        /// seeded once from the shared template and then owned by the user. The
-        /// .mcp.json is derived purely from <paramref name="port"/>, so it is always
+        /// Create this agent's session dir and (re)write its files. CLAUDE.md is
+        /// seeded once (with the agent's private layer prefix baked in) and then
+        /// owned by the user. The .mcp.json is derived purely from
+        /// <paramref name="port"/> and <paramref name="agentId"/>, so it is always
         /// rewritten to stay correct. Returns the session dir (the claude cwd).
         /// </summary>
-        public static string EnsureSession(int port)
+        public static string EnsureSession(int port, string agentId, string layerPrefix)
         {
-            var root = SessionRoot(port);
+            var root = AgentSessionRoot(port, agentId);
             Directory.CreateDirectory(root);
 
             var claudeMd = Path.Combine(root, "CLAUDE.md");
             if (!File.Exists(claudeMd))
             {
-                File.WriteAllText(claudeMd, ClaudeMdTemplate);
-                Log.Write($"[CoRhino] Seeded CLAUDE.md at {claudeMd}");
+                File.WriteAllText(claudeMd, ClaudeMdTemplate(layerPrefix));
+                Log.Write($"[CoRhino] Seeded CLAUDE.md at {claudeMd} (layer {layerPrefix})");
             }
 
-            File.WriteAllText(McpConfigPath(port), McpConfigTemplate(port));
-            Log.Write($"[CoRhino] Wrote .mcp.json at {McpConfigPath(port)} (port {port})");
+            File.WriteAllText(McpConfigPath(port, agentId), McpConfigTemplate(port, agentId));
+            Log.Write($"[CoRhino] Wrote .mcp.json at {McpConfigPath(port, agentId)} (port {port}, agent {agentId})");
 
             return root;
         }
 
-        static string McpConfigTemplate(int port)
+        static string McpConfigTemplate(int port, string agentId)
         {
             // Single MCP server: the RhinoMCP HTTP host running *inside this* Rhino
-            // (started by the panel via MCPStart on this instance's port). Direct-HTTP
-            // — no node router, no separately-spawned Rhino — so claude operates the
-            // Rhino its panel is docked in, not whichever instance grabbed 10500.
+            // on this panel's port. Direct-HTTP — no node router — so claude operates
+            // the Rhino its panel is docked in. Every agent (tab) on this panel points
+            // at the SAME port: the host is stateless and serializes tool calls on the
+            // UI thread, so parallel agents share one document safely. The
+            // X-CoRhino-Agent header tags each connection so the host can later
+            // attribute changes or hand out per-agent leases (not used yet).
             return $$"""
             {
               "mcpServers": {
                 "rhino": {
                   "type": "http",
-                  "url": "http://localhost:{{port}}/"
+                  "url": "http://localhost:{{port}}/",
+                  "headers": {
+                    "X-CoRhino-Agent": "{{agentId}}"
+                  }
                 }
               }
             }
@@ -105,14 +119,26 @@ namespace CoRhino.Panel
             """;
         }
 
-        const string ClaudeMdTemplate = """
-        # CoRhino Workspace
+        static string ClaudeMdTemplate(string layerPrefix) => $$"""
+        # CoRhino Workspace — {{layerPrefix}}
 
-        この CLAUDE.md は CoRhino が起動する Claude セッション専用の作業ディレクトリです。
-        このディレクトリはパネルがドックされている Rhino インスタンス1つに対応し、セッションは
+        この CLAUDE.md は CoRhino が起動する Claude セッション（エージェント `{{layerPrefix}}`）専用の
+        作業ディレクトリです。このパネルがドックされている Rhino インスタンス1つに対応し、セッションは
         アクティブな .3dm の場所ではなく常にこのディレクトリで起動します。Rhino の操作は `rhino`
         MCP サーバ（RhinoMCP）のツール経由で行ってください。接続先はこのインスタンス専用ポートの
         ホストなので、ツール呼び出しは必ずこのパネルの Rhino に反映されます。
+
+        ## 並列エージェントのルール（重要）
+
+        同じ Rhino ドキュメントに **複数の Claude が同時接続**しています。互いの作業を壊さないため:
+
+        - あなたの担当レイヤは **`{{layerPrefix}}`**。新規作成・移動・変更・削除は
+          **`{{layerPrefix}}` 配下のレイヤにあるオブジェクトのみ**に行うこと。
+        - オブジェクト作成時は必ず現在レイヤを `{{layerPrefix}}`（または `{{layerPrefix}}/<用途>`）に
+          設定してから作る。
+        - 他レイヤは **読み取りは自由**だが、**書き込み・削除はしない**。
+        - 他エージェントの変更はリアルタイムには通知されない。最新状態が要るときは
+          `list_objects` 等で都度問い合わせること。
 
         ## 主要ツール（RhinoMCP）
 

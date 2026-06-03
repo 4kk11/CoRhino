@@ -15,6 +15,7 @@ namespace CoRhino.Pty
         CancellationTokenSource? _readerCts;
         Task? _readerTask;
         int _exitedRaised;
+        volatile bool _disposed;
 
         public event Action<byte[]>? DataReceived;
         public event Action<int>? Exited;
@@ -53,6 +54,18 @@ namespace CoRhino.Pty
             Log.Write($"[Claude/PTY] Calling PtyProvider.SpawnAsync app={app} cwd={cwd} cols={cols} rows={rows}");
             var connection = await PtyProvider.SpawnAsync(options, CancellationToken.None).ConfigureAwait(false);
             _connection = connection;
+            // Dispose() may have run while we were awaiting SpawnAsync (e.g. the tab was
+            // closed mid-start). It sets _disposed first, then tries to Kill _connection
+            // — which was still null at that instant. Re-check here and tear the just-
+            // created process down ourselves so we never leak a live PTY.
+            if (_disposed)
+            {
+                Log.Write("[Claude/PTY] Disposed during spawn; tearing down new connection.");
+                _connection = null;
+                try { connection.Kill(); } catch { }
+                try { connection.Dispose(); } catch { }
+                return;
+            }
             Log.Write($"[Claude/PTY] SpawnAsync returned. pid={connection.Pid}");
             connection.ProcessExited += (_, e) =>
             {
@@ -120,6 +133,9 @@ namespace CoRhino.Pty
 
         public void Dispose()
         {
+            // Set _disposed before touching _connection so a spawn still in flight
+            // (StartAsync awaiting SpawnAsync) sees it and tears down its own result.
+            _disposed = true;
             // Mark exited first so the reader's EOF / ProcessExited paths don't also
             // raise Exited while we're tearing the session down explicitly.
             Interlocked.Exchange(ref _exitedRaised, 1);

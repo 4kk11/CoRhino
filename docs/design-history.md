@@ -237,5 +237,78 @@ Phase 0 のスパイク（S1/S3）は未実機検証だが、direct-HTTP(D1) 前
   に送り、新セッションをクリーンな画面に描画する。
 
 ### 再入防止
-`CoRhinoPanel._starting` を `Interlocked` で管理し、起動直後（spawn 完了前）の
-コマンド連打や再起動中の二重 spawn を防ぐ。
+reopen 時の再 spawn 経路は `CoRhinoPanel._respawning` を `Interlocked` で管理し、`EnsureSessionAlive`
+の二重実行を防ぐ。`createTab` は毎回新しい agentId を採番するので二重 spawn の懸念がなくガード不要
+（D7 以前の単一セッション期は `_starting` フラグだったが、タブ多重化で役割を `_respawning` に置換）。
+
+## 追加決定 D7: 1 ドキュメントに複数 claude（タブ並列エージェント, 2026-06-03）
+
+### 意図（なぜやるか）
+同一 Rhino ドキュメントに対し、複数の Claude Code を**並列で独立作業**させたい（例: 1 エージェントが
+ジオメトリ生成、別エージェントが解析/レビュー）。
+
+### 調査で判明した決定的事実（公式 Rhino-MCP-Platform 側）
+`.06_Projects/RhinoMCP` を読んで確認:
+- HTTP ホストは**ステートレス**。`initialize` ハンドシェイク不要で、各ツール呼び出しが自己完結した
+  JSON-RPC POST（`rhino/plugin/Server/McpEndpoint.cs`）。→ 1 ポートに複数クライアントが同時接続できる。
+- ホストは `RuntimeSerialNumber` で **doc 単位**にキー付き、`RhinoDoc` を DI シングルトンで固定
+  （`RhMcpHost.cs`, `McpServer.cs`）。→ そのポートに繋いだ全 claude は同じ doc を操作する。
+- ツール実行は `RhinoApp.InvokeOnUiThread` で **UI スレッドに直列化**（`ToolRegistry.cs`）。
+  → 複数 claude の同時 POST でもクラッシュしない。
+
+**帰結**: 「1 doc に複数 claude」は**ホスト無改修**で成立する。CoRhino 側を「1パネル内に複数タブ＝
+複数 PTY＝複数 claude、全タブが同一ホストポート共有」に拡張するだけでよい。
+
+### 決定
+- **案A: 1 パネル内タブ式**を採用。ポートが自然に doc 単位に保たれ（既に 1 パネル = 1 doc）、`_hostPort`
+  据え置きで済む。Rhino のパネル機構（`GetPanel` の per-doc キャッシュ）と非衝突。ホスト起動は doc 初回 1 回のまま。
+- **却下した案**:
+  - 案B 複数パネル: `GetPanel` の per-doc 単一キャッシュとドック UX に反する。同一 doc に複数ホストを
+    立てると RhinoMCP の `RestartOnPort` で互いを止め合う。
+  - 案C オーケストレータ（claude のサブエージェントで多重化）: 将来併用可だが、「独立並列」主目的に対し
+    UI 体験が弱い。
+- **論理衝突はレイヤ・ソフト分離で回避**: ホストはクライアント間調整をしない（per-client 状態なし）。
+  UI スレッド直列化は同時実行クラッシュは防ぐが論理衝突（A が消した object を B が参照 等）は防がない。
+  各エージェントの CLAUDE.md に担当レイヤ接頭辞（`agent-N/`）を埋め、書き込みは自レイヤのみ・他レイヤは
+  読み取りのみと規定する。ホスト改修ゼロで、レイヤ＝帰属の可視化も兼ねる。**アドバイザリ**（遵守頼み）で
+  あることは許容し、強制力（ホスト側リース）は衝突が痛くなってからの将来作業（roadmap）。
+- **将来フックとして `X-CoRhino-Agent` ヘッダを今入れる**: 各タブの `.mcp.json` に一意のエージェント ID を
+  ヘッダで付ける。今は誰も読まないが、後でホスト側に帰属ログ/リースを足すとき再設計不要にする。
+  設計境界に沿う（識別子の注入は CoRhino、調整ツール本体は公式 Rhino-MCP-Platform）。
+
+### 実装（src/Panel/CoRhinoPanel.cs, Workspace.cs, ui/src/main.ts）
+- パネルは単一 `_session` → `Dictionary<string, AgentTab> _tabs`。agentId は `agent-N` 連番。
+- WebView プロトコルを **agentId 多重化**（`createTab`/`closeTab`/`stdin`/`resize` ↔ `onTabCreated`/
+  `onPtyData`/`onSessionRestart`/`onTabClosed`/`onTabsReset`）。
+- session dir を per-agent（`sessions/<port>/<agentId>/`）化。`.mcp.json` に `X-CoRhino-Agent` ヘッダ、
+  CLAUDE.md に担当レイヤ節を seed。
+- UI はタブバー（汎用「＋」で任意個・×で閉じる・クリック切替）＋ タブごとの xterm。
+- 最後のタブが exit したらパネルを閉じ、reopen で agent-1 を再 spawn。
+- **検証**: ビルド pass（`dotnet build src/CoRhino.csproj`、tsc strict + vite, 0 警告）。
+  実機の「2 タブ → 別レイヤにジオメトリ生成 → 両方反映・分離」「片タブ /exit で他タブ生存」は要実機確認。
+
+### D7 レビュー反映（Codex セカンドオピニオン, 2026-06-03）
+
+初版を Codex にレビューさせ、見つかった並行性/ライフサイクルのバグを修正した。
+
+- **B5 ×ボタンでタブが消えない（High）**: `CloseTab` が `PtySession.Dispose()` だけを呼んでいたが、`Dispose` は
+  `_exitedRaised` を立て `Exited` を抑止するため、`OnSessionExited` 経由の後片付け（`_tabs` 除去・`onTabClosed`・
+  Terminal 破棄・空ならパネルクローズ）が一切走らなかった。→ 撤去経路を **`RemoveTab(tab)` に一本化**し、
+  exit / ×ボタン / 起動失敗すべてここを通す。`CloseTab` は `RemoveTab` を直接呼ぶ。
+- **B6 id 再利用で遅延コールバックが別タブを誤操作（High）**: コールバックが agentId 文字列だけを束縛しており、
+  reopen で `_nextAgentNum` を 1 に戻すと、古い agent-1 の遅延 `DataReceived`/`Exited` が新 agent-1 に当たり得た。
+  → コールバックは **`AgentTab` インスタンス**を束縛し、`RemoveTab`/`OnPtyData` で `ReferenceEquals` 確認して stale を破棄。
+- **B7 起動中タブの二重 spawn（Critical）**: `EnsureSessionAlive` が `IsRunning` だけ見ていたが、`IsRunning` は
+  `SpawnAsync` 戻りまで false。構築直後にコマンドが `EnsureSessionAlive` を呼ぶと起動中の agent-1 を消して
+  二重起動し得た。→ `AgentTab.Starting`（volatile）を追加し、起動中も「生存」とみなす。
+- **B8 spawn 中 Dispose で PTY リーク（High）**: `PtySession.Dispose` が pending spawn を考慮せず、`SpawnAsync` 戻り後に
+  `_connection` が代入されると生きたプロセスが残り得た。→ `_disposed`（volatile）を追加。`StartAsync` は `SpawnAsync`
+  戻り後に再チェックし、破棄済みなら自分で Kill/Dispose。
+- **起動失敗時の後始末（Medium）**: `StartSession` の catch で `RemoveTab` を UI スレッドへ marshal し、死んだタブを残さない。
+- **UI: `term.open` 失敗のロールバック（Medium）**: 失敗時に `term.dispose()`・DOM 除去・`tabs.delete` で半端な状態を残さない。
+- **メッセージ堅牢化（Low）**: `type` を `TryGetProperty` で取得し、ハンドラの catch を `Exception` に広げて
+  version-skew な1メッセージでポンプを壊さない。
+
+修正後ビルド pass（0 警告）。B5 は実機の `/exit` 経路だけ試して×経路を見落としていた退行で、レビューで捕捉した。
+
+### 構造そのものの説明 → [`architecture.md`](architecture.md) §5.2 / 残作業 → [`roadmap.md`](roadmap.md)（ここでは重複させない）。
