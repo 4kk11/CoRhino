@@ -8,9 +8,14 @@ Claude Code が、いま開いているその Rhino を操作できる。
 agents）は公式 [Rhino-MCP-Platform](https://github.com/mcneel/RhinoMCP) に乗り、
 CoRhino はその**パネル UX・起動配線・オンボーディング**だけを担う（ツールは持たない）。
 
+
+
+https://github.com/user-attachments/assets/824f03e8-8070-4911-a21d-9be97cdc1bc3
+
+
+
 > [!WARNING]
 > Pre-alpha / WIP。CLI・プロトコル・handler 名は予告なく変わる。
-
 ## 仕組み
 
 ```
