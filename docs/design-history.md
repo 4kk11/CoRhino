@@ -540,3 +540,31 @@ jsonl 化されない点は既知（リネームすると孤児エントリ、�
 - プロトコルは不変（`onSessionsList` の行から slot/slotBusy が消えただけ）。
 - **検証**: `dotnet build` 0 警告 0 エラー・`tsc --noEmit` 0 エラー。実機確認は未（D10 と合わせて実施）。
   `--append-system-prompt` の interactive での実効（レイヤ遵守）は実機確認項目に追加。
+
+## バグ記録: タブ追加直後のレイアウト崩れ — 初回 resize が spawn 中に消失（2026-07-07）
+
+**症状**: mac でタブ（エージェント）を追加すると、claude の初期画面が 80 桁想定で描画され、
+実際の xterm 幅（例: 50 桁）で強制折り返しされて崩れる。パネルを手でリサイズすると直る。
+
+**原因**: レースコンディション。タブ追加時、UI は即座に xterm を作って実サイズの `resize` を
+ポストするが、ホスト側では `LaunchSessionInBackground` がまだ spawn 前
+（mac は `CliResolver.ResolveUnix` のログインシェル起動だけで数百 ms かかる）。
+旧 `PtySession.Resize` は `_connection?.Resize(...)` だったため、接続前に届いた resize を
+**無言で捨てていた**。その後 PTY は `StartAsync` のデフォルト 80x24 で生成され、claude は
+80 桁として描画。パネルサイズが変わらない限り xterm の `onResize`（cols/rows 変化時のみ発火）は
+二度と発火しないので、崩れたまま固定される。手動リサイズで直るのは、fit で cols が変わって
+`resize` が再送され、その時点では接続が生きているから（SIGWINCH → claude 全再描画）。
+
+パネル初回起動の1枚目のタブで顕在化しにくいのは逆のタイミングのため: WebView 自体の起動が遅く、
+UI の ready → fit → resize が届く頃には spawn が完了していることが多い。
+
+**修正**（PtySession.cs）: 最後に要求されたサイズを `_sizeLock` 下で記憶し、
+(a) `StartAsync` は spawn オプション組み立て時に記憶済みサイズでデフォルトを上書き、
+(b) spawn 完了直後にも記憶済みサイズを適用（spawn 中に届いた resize の回収）、
+(c) `Resize` は記録＋接続があれば即適用。ロックのペアリングにより「接続が見えて直接適用」か
+「記録されて StartAsync が適用」のどちらかに必ず倒れ、消失経路がなくなった。
+ホスト側（AgentTab にサイズを持たせて StartAsync に渡す案)ではなく PtySession 内で閉じたのは、
+「PTY のサイズはセッション自身の関心事」であり、呼び出し側全員（fallback shell 含む）に
+同じ配線を強いないため。
+
+**検証**: `dotnet build` 0 警告 0 エラー。実機確認（タブ追加直後に崩れないこと）は次回 Rhino 起動時。

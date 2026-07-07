@@ -17,6 +17,15 @@ namespace CoRhino.Pty
         int _exitedRaised;
         volatile bool _disposed;
 
+        // Last size requested via Resize(). The UI reports the pane's real size as
+        // soon as its xterm exists, which races SpawnAsync (on mac, CliResolver's
+        // login shell alone takes hundreds of ms) — dropping that message would
+        // leave claude on the 80x24 spawn default until the user resizes the panel
+        // by hand. Remembered here and applied at/after spawn instead.
+        readonly object _sizeLock = new object();
+        int _lastCols, _lastRows;
+        bool _hasLastSize;
+
         public event Action<byte[]>? DataReceived;
         public event Action<int>? Exited;
 
@@ -26,6 +35,13 @@ namespace CoRhino.Pty
         {
             if (_connection != null)
                 throw new InvalidOperationException("PtySession already started.");
+
+            // A Resize() that already arrived (the UI's initial report beats the
+            // spawn) supersedes the caller's default size.
+            lock (_sizeLock)
+            {
+                if (_hasLastSize) { cols = _lastCols; rows = _lastRows; }
+            }
 
             Log.Write("[Claude/PTY] Preparing environment (minimal allow-list)...");
             var environment = new Dictionary<string, string>();
@@ -67,6 +83,13 @@ namespace CoRhino.Pty
                 return;
             }
             Log.Write($"[Claude/PTY] SpawnAsync returned. pid={connection.Pid}");
+            // Apply a size that arrived mid-spawn (Resize() saw _connection == null
+            // then and could only record it). Redundant when nothing changed —
+            // the PTY treats a same-size resize as a no-op.
+            lock (_sizeLock)
+            {
+                if (_hasLastSize) connection.Resize(_lastCols, _lastRows);
+            }
             connection.ProcessExited += (_, e) =>
             {
                 // claude exited (e.g. /exit). Tear the connection down so IsRunning
@@ -128,7 +151,16 @@ namespace CoRhino.Pty
 
         public void Resize(int cols, int rows)
         {
-            _connection?.Resize(cols, rows);
+            // The lock pairs with StartAsync's post-spawn apply: either _connection
+            // is visible here and the resize goes straight through, or the size is
+            // recorded and StartAsync applies it — never silently lost.
+            lock (_sizeLock)
+            {
+                _lastCols = cols;
+                _lastRows = rows;
+                _hasLastSize = true;
+                _connection?.Resize(cols, rows);
+            }
         }
 
         public void Dispose()
