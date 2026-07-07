@@ -1,6 +1,7 @@
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import { createSkillsDrawer, type SkillsListPayload } from './skills-drawer'
 
 declare global {
   interface Window {
@@ -16,6 +17,8 @@ declare global {
       onTabClosed: (agentId: string) => void
       // Reopen-respawn: drop all tabs before the host re-announces a fresh one.
       onTabsReset: () => void
+      // Skill list for one tab (listSkills/reloadSkills response or watcher push).
+      onSkillsList: (payload: SkillsListPayload) => void
     }
     chrome?: { webview?: { postMessage: (msg: string) => void } }
   }
@@ -27,6 +30,9 @@ type Outbound =
   | { type: 'closeTab'; agentId: string }
   | { type: 'stdin'; agentId: string; data: string }
   | { type: 'resize'; agentId: string; cols: number; rows: number }
+  | { type: 'listSkills'; agentId: string }
+  | { type: 'openSkill'; path: string }
+  | { type: 'reloadSkills'; agentId: string }
   | { type: 'debug'; message: string }
 
 function post(msg: Outbound) {
@@ -89,10 +95,16 @@ function boot() {
   #terminal { display: flex; flex-direction: column; height: 100%; width: 100%; }
   #tabbar {
     display: flex; align-items: stretch; height: 28px; flex: 0 0 28px;
-    background: #1a1a1a; border-bottom: 1px solid #2a2a2a; overflow-x: auto; overflow-y: hidden;
+    background: #1a1a1a; border-bottom: 1px solid #2a2a2a; overflow: hidden;
     font: 12px ui-monospace, Menlo, monospace; user-select: none;
   }
-  #tabbar::-webkit-scrollbar { height: 0; }
+  /* Tabs scroll inside their own strip so #skillsbtn stays pinned at the right
+     edge even when tabs overflow (an auto margin would scroll away with them). */
+  #tabscroll {
+    display: flex; align-items: stretch; flex: 1 1 auto;
+    overflow-x: auto; overflow-y: hidden;
+  }
+  #tabscroll::-webkit-scrollbar { height: 0; }
   .tab {
     display: flex; align-items: center; gap: 6px; padding: 0 10px; height: 100%;
     color: #aaa; cursor: pointer; border-right: 1px solid #2a2a2a; white-space: nowrap;
@@ -106,6 +118,7 @@ function boot() {
     color: #aaa; cursor: pointer; border-right: 1px solid #2a2a2a; font-size: 16px; line-height: 1;
   }
   #addtab:hover { background: #222; color: #fff; }
+  #main { display: flex; flex-direction: row; flex: 1 1 auto; overflow: hidden; }
   #terminals { position: relative; flex: 1 1 auto; overflow: hidden; }
   .termpane { position: absolute; inset: 0; padding: 4px; box-sizing: border-box; }
   .termpane.hidden { display: none; }
@@ -131,16 +144,36 @@ ${isWindowsWebView2 ? `
   rootEl.innerHTML = ''
   const tabbar = document.createElement('div')
   tabbar.id = 'tabbar'
+  const tabscroll = document.createElement('div')
+  tabscroll.id = 'tabscroll'
+  tabbar.appendChild(tabscroll)
   const addBtn = document.createElement('div')
   addBtn.id = 'addtab'
   addBtn.textContent = '+'
   addBtn.title = '新しいエージェント'
   addBtn.addEventListener('click', () => post({ type: 'createTab' }))
-  tabbar.appendChild(addBtn)
+  tabscroll.appendChild(addBtn)
   const termsEl = document.createElement('div')
   termsEl.id = 'terminals'
+
+  // Skills Drawer: ⚡ at the tab bar's right edge toggles a fixed-width panel to
+  // the right of the terminals. The drawer module owns its DOM; we own the layout
+  // slot, the message bridge, and refitting the terminal on open/close.
+  const drawer = createSkillsDrawer({
+    requestList: (agentId) => post({ type: 'listSkills', agentId }),
+    openSkill: (path) => post({ type: 'openSkill', path }),
+    reloadSkills: (agentId) => post({ type: 'reloadSkills', agentId }),
+    getActiveAgentId: () => activeTab?.agentId ?? null,
+    onToggled: () => { if (activeTab) safeFit(activeTab) },
+  })
+  tabbar.appendChild(drawer.button)
+
+  const mainEl = document.createElement('div')
+  mainEl.id = 'main'
+  mainEl.appendChild(termsEl)
+  mainEl.appendChild(drawer.root)
   rootEl.appendChild(tabbar)
-  rootEl.appendChild(termsEl)
+  rootEl.appendChild(mainEl)
 
   type Tab = {
     agentId: string
@@ -193,6 +226,9 @@ ${isWindowsWebView2 ? `
     // The pane just became visible; fit to its real size and focus it.
     safeFit(tab)
     tab.term.focus()
+    // needsReload is per-tab (each spawned/reloaded at a different time), so the
+    // drawer re-requests the list from the new active tab's perspective.
+    drawer.notifyActiveTabChanged()
   }
 
   function addTab(agentId: string) {
@@ -207,7 +243,7 @@ ${isWindowsWebView2 ? `
     const { term, fit } = createTerminal()
     const tab: Tab = { agentId, term, fit, pane, tabEl: buildTabButton(agentId), lastCols: term.cols, lastRows: term.rows }
     tabs.set(agentId, tab)
-    tabbar.insertBefore(tab.tabEl, addBtn)
+    tabscroll.insertBefore(tab.tabEl, addBtn)
 
     try {
       term.open(pane)
@@ -351,6 +387,9 @@ ${isWindowsWebView2 ? `
     },
     onTabsReset() {
       for (const id of [...tabs.keys()]) removeTab(id)
+    },
+    onSkillsList(payload: SkillsListPayload) {
+      drawer.handleSkillsList(payload)
     },
   }
 

@@ -173,7 +173,7 @@ Rhino がドキュメントごとに `new CoRhinoPanel(uint documentSerialNumber
 | `StartSession(tab)` | CLI 解決 → そのエージェントの session dir 準備 → claude を PTY で spawn（後述） | [:207](../src/Panel/CoRhinoPanel.cs#L207) |
 | `EnsureHostMcpStarted` | `RhinoApp.Idle` ワンショットで env var セット + `_-MCPSpawn` 発火（全タブ共有・1回） | [:266](../src/Panel/CoRhinoPanel.cs#L266) |
 | `OnDocChangedRestartHost` | doc 切替/新規時、導入済みならホスト再起動 | [:303](../src/Panel/CoRhinoPanel.cs#L303) |
-| `OnMessageReceived` | WebView → C# の JSON を捌く（ready/createTab/closeTab/stdin/resize/debug、agentId で振り分け） | [:311](../src/Panel/CoRhinoPanel.cs#L311) |
+| `OnMessageReceived` | WebView → C# の JSON を捌く（ready/createTab/closeTab/stdin/resize/listSkills/openSkill/reloadSkills/debug、agentId で振り分け） | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `OnPtyData(tab,…)` | PTY 出力を UTF-8 化し該当タブへ（未 ready ならそのタブの `Pending` にキュー）。id 再利用に備え `ReferenceEquals` で stale を破棄 | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `OnSessionExited(tab,…)` | claude 終了 → `RemoveTab(tab)` を UI スレッドで呼ぶ | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `RemoveTab(tab)` | **タブ撤去の単一経路**（exit / ×ボタン / 起動失敗 共通）。id→別インスタンスなら no-op。Session Dispose + `onTabClosed` + 空なら `ClosePanel` | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
@@ -205,6 +205,25 @@ claude --strict-mcp-config --mcp-config <~/.corhino/sessions/<port>/<agentId>/.m
 
 WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くことがあるので、`_webReady` が立つまで
 **そのタブの `Pending` キュー**に溜め、`ready` 受信時に各タブを `onTabCreated` で announce してから `FlushPending` で流す。
+
+#### Skills Drawer の配線（`SkillsCatalog.cs` + watcher）
+
+パネル右サイドのスキル一覧ドロワー（→ 2.9）の C# 側。スキャンとパースは **`SkillsCatalog.cs`**
+（UI 非依存の static クラス）に分離されている:
+
+- `SkillsCatalog.Scan(loadedAtUtc)` … user（`~/.corhino/skills/skills/*/SKILL.md`）と bundled
+  （`<assembly dir>/cc-plugin/skills/*/SKILL.md`）を列挙し、frontmatter の `name:`/`description:`
+  **単一行値のみ**をパース（YAML ライブラリなし。壊れたファイルはディレクトリ名にフォールバックし一覧から消さない）。
+- **needsReload の近似**: claude 内部のロード状態は外から読めないため、各 `AgentTab` の
+  `SkillsLoadedAtUtc`（spawn 時に初期化、reloadSkills で now に更新）と SKILL.md の mtime を比較する。
+  誤検知は「⟳ を押せば必ず正しい状態に収束する」方向にしか倒れない。
+- `IsKnownSkillPath` … `openSkill` のパス検証。**直近 Scan が返した path 集合に含まれるものだけ**を
+  `Process.Start`（UseShellExecute）で開く。WebView からの任意パス起動を防ぐ。
+- **FileSystemWatcher**: `~/.corhino/skills/skills/` を再帰監視。イベントは 300ms の one-shot
+  `System.Threading.Timer` を再アームするだけ（エディタの保存は複数イベントを発火する）で、タイマーの
+  コールバックが `AsyncInvoke` で UI スレッドに戻り**全タブ分**の `onSkillsList` を push する。
+  C# はアクティブタブを知らない——UI 側が自分のアクティブタブと一致する payload だけ描画し、
+  ドロワー閉時は無視する（開閉状態を C# と同期しない）。パネル `Dispose` で watcher/timer とも破棄。
 
 ### 2.4 ワークスペース — `Workspace.cs`
 
@@ -290,11 +309,12 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
 
 ### 2.9 UI 層 — `ui/`（xterm.js）
 
-**責務**: WebView 内に**タブ式**の xterm.js ターミナル群を描画し、キー入力を C# へ、PTY 出力を画面へ流す。
-`ui/src/main.ts` が単一エントリ。
+**責務**: WebView 内に**タブ式**の xterm.js ターミナル群と**スキル一覧ドロワー**を描画し、キー入力を C# へ、
+PTY 出力を画面へ流す。エントリは `ui/src/main.ts`、ドロワーは `ui/src/skills-drawer.ts` に分離。
 
-- **シェル構造**: `#terminal` を縦 flex にし、上に**タブバー** `#tabbar`（タブボタン群 + 末尾「＋」）、下に
-  ターミナル領域 `#terminals`（各タブ = 絶対配置の `.termpane`、アクティブのみ表示）を JS で構築。
+- **シェル構造**: `#terminal` を縦 flex にし、上に**タブバー** `#tabbar`（タブボタン群 + 「＋」 + 右端の
+  ⚡ `#skillsbtn`）、下に横 flex の `#main`（ターミナル領域 `#terminals` + 右の `#skillsdrawer`、幅 260px
+  固定・閉時 `display:none`）を JS で構築。各タブ = 絶対配置の `.termpane`、アクティブのみ表示。
 - **タブ管理**: `Map<agentId, Tab>`（`Tab = { agentId, term, fit, pane, tabEl, … }`）と `activeTab`。
   - `addTab(agentId)` … pane + xterm を生成し、開いてアクティブ化。`onData`/`onResize` を **agentId 付き**で post。
   - `activateTab` … 他を隠し対象を表示 → `fit()` → focus。
@@ -302,13 +322,20 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
   - 「＋」→ `createTab` を post（採番は C# 側）。各タブの「×」→ `closeTab` を post。
 - **ブリッジ** `post()`: 環境ごとに送信口が違う（macOS=`window.eto`、Windows=`window.chrome.webview`、レガシー=`window.external.notify`）。
 - **送信メッセージ（Outbound）**: `ready` / `createTab` / `closeTab{agentId}` / `stdin{agentId,data}` /
-  `resize{agentId,cols,rows}` / `debug`。
+  `resize{agentId,cols,rows}` / `listSkills{agentId}` / `openSkill{path}` / `reloadSkills{agentId}` / `debug`。
 - **受信窓口** `window.CoRhinoPanel`: C# 側が `ExecuteScriptAsync` で呼ぶ。
   - `onTabCreated(agentId)` → タブ＋xterm を生成しアクティブ化
   - `onPtyData(agentId, text)` → 該当タブの `term.write(text)`
   - `onSessionRestart(agentId)` → 該当タブの `term.reset()`
   - `onTabClosed(agentId)` → そのタブを除去
   - `onTabsReset()` → 全タブ除去（reopen 再 spawn 前）
+  - `onSkillsList(payload)` → ドロワーへ（閉時・非アクティブタブの payload は無視）
+- **Skills Drawer**（`skills-drawer.ts`）: ⚡ で開閉（開閉時にアクティブタブを `safeFit()`）。行 =
+  状態ドット（`●` ロード済み / `⚠` 要 reload）+ name + 出所バッジ（自作/同梱）。クリックで description
+  展開 + 「エディタで開く」（`openSkill`）。ヘッダ ⟳ = `reloadSkills`（C# が PTY へ
+  `/plugin reload-plugins` を注入し、タブの `SkillsLoadedAtUtc` を進めて一覧を再送）。スキル名・説明は
+  ユーザー作のファイル内容なので**必ず `textContent` で挿入**（innerHTML 禁止）。タブ切替時は新アクティブ
+  タブ視点で `listSkills` を再要求する。
 - xterm 設定: `convertEol: true`。Windows ConPTY の bare `\n` 階段化を `\r\n` 合成で吸収。
 - **macOS のキー欠落対策**: capture-phase の `keydown` で印字可能キーを先取りして**アクティブタブの** `term.input()` に流し、
   `input`/`beforeinput` を握り潰す（"rhino"→"rhn", xterm #5374）。IME 合成中は素通し。合成状態は各タブ生成時に
@@ -369,6 +396,9 @@ CoRhino は内部に4つの通信境界を持つ。バグはたいていこの�
 | `closeTab` | `agentId` | `CloseTab(agentId)`（その PtySession を Dispose） |
 | `stdin` | `agentId, data` | UTF-8 で該当タブの `Session.Write()`（PTY へ） |
 | `resize` | `agentId, cols, rows` | 該当タブの `Session.Resize(cols, rows)` |
+| `listSkills` | `agentId` | `SkillsCatalog.Scan`（そのタブの `SkillsLoadedAtUtc` 視点）→ `onSkillsList` |
+| `openSkill` | `path` | `IsKnownSkillPath` 検証 → `Process.Start`（UseShellExecute）で SKILL.md を開く |
+| `reloadSkills` | `agentId` | 該当タブの PTY へ `/plugin reload-plugins` 注入 → `SkillsLoadedAtUtc=now` → `onSkillsList` 再送 |
 | `debug` | `message` | `Log.Write("[Claude/UI] …")` |
 
 **C# → UI（`ExecuteScriptAsync` で `window.CoRhinoPanel` を呼ぶ）**
@@ -380,6 +410,7 @@ CoRhino は内部に4つの通信境界を持つ。バグはたいていこの�
 | `onSessionRestart(agentId)` | 該当タブの `term.reset()`（再起動時に画面クリア） |
 | `onTabClosed(agentId)` | そのタブを除去 |
 | `onTabsReset()` | 全タブ除去（reopen 再 spawn 前） |
+| `onSkillsList(payload)` | `{agentId, skills[]}`。ドロワーが開いていて payload がアクティブタブのものなら描画（それ以外は無視）。listSkills/reloadSkills への応答のほか、watcher 検知時に**全タブ分** push される |
 
 ### 3.3 起動シーケンス（初回 `CoRhino` 実行）
 

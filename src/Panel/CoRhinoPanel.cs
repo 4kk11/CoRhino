@@ -32,6 +32,12 @@ namespace CoRhino.Panel
             // Output produced before the WebView is ready (and thus before the tab's
             // xterm exists). Drained on 'ready' / right after the tab is announced.
             public readonly Queue<string> Pending = new();
+            // When this tab's claude last picked up the skill plugins: tab creation
+            // (claude loads them at spawn) or the drawer's ⟳ (reloadSkills). Skills
+            // whose SKILL.md mtime is newer show ⚠ in the drawer. Initialized here —
+            // slightly BEFORE the actual spawn — so a write racing the launch can only
+            // produce a false ⚠ (harmless; ⟳ converges), never a false ●.
+            public DateTime SkillsLoadedAtUtc = DateTime.UtcNow;
         }
 
         readonly WebView _webView;
@@ -53,6 +59,13 @@ namespace CoRhino.Panel
         // time, so each Rhino instance gets a distinct endpoint. The MCPSpawn and
         // every tab's .mcp.json use it, keeping all agents bound to *this* Rhino.
         readonly int _hostPort = Workspace.ResolveFreePort();
+
+        // Live-update source for the Skills Drawer: watches the user's skill plugin
+        // so a save lands in the list without reopening the drawer.
+        FileSystemWatcher? _skillsWatcher;
+        // One-shot debounce for watcher bursts (editors fire several fs events per
+        // save). Re-armed on every event; fires once 300ms after the last.
+        System.Threading.Timer? _skillsPushTimer;
 
         static readonly JsonSerializerOptions JsonOptions = new()
         {
@@ -98,6 +111,7 @@ namespace CoRhino.Panel
 
             Content = _webView;
             LoadWebView();
+            StartSkillsWatcher();
 
             // Spawn the first agent. More are added on demand when the user clicks
             // "+" in the tab bar (a 'createTab' message).
@@ -428,6 +442,29 @@ namespace CoRhino.Panel
                         }
                         break;
 
+                    case "listSkills":
+                        if (TryGetTab(root, out var listTab))
+                            SendSkillsList(listTab!);
+                        break;
+
+                    case "openSkill":
+                        if (root.TryGetProperty("path", out var pathEl))
+                            OpenSkill(pathEl.GetString());
+                        break;
+
+                    case "reloadSkills":
+                        // Inject the reload into the tab's claude, advance the tab's
+                        // load timestamp, and re-send the list so ⚠ dots clear. A
+                        // plain UI-side stdin write couldn't advance the timestamp —
+                        // that's why this is its own message.
+                        if (TryGetTab(root, out var reloadTab) && reloadTab!.Session.IsRunning)
+                        {
+                            reloadTab.Session.Write(Encoding.UTF8.GetBytes("/plugin reload-plugins\r"));
+                            reloadTab.SkillsLoadedAtUtc = DateTime.UtcNow;
+                            SendSkillsList(reloadTab);
+                        }
+                        break;
+
                     case "debug":
                         if (root.TryGetProperty("message", out var msgEl))
                         {
@@ -462,6 +499,91 @@ namespace CoRhino.Panel
             if (agentId == null || !_tabs.TryGetValue(agentId, out var tab)) return;
             Log.Write($"[CoRhino] Closing tab {agentId} by user request.");
             RemoveTab(tab);
+        }
+
+        // Watch the user's skill dir and re-push the drawer list on any change.
+        // Events only re-arm the 300ms one-shot timer; its callback marshals to the
+        // UI thread and pushes one list per tab. The UI keeps the payload matching
+        // its active tab and drops the rest — C# never tracks which tab is active,
+        // and a push while the drawer is closed is simply ignored over there.
+        void StartSkillsWatcher()
+        {
+            try
+            {
+                var dir = Path.Combine(Workspace.EnsureUserSkillsPlugin(), "skills");
+                _skillsPushTimer = new System.Threading.Timer(_ =>
+                    Application.Instance?.AsyncInvoke(PushSkillsListToAllTabs));
+                _skillsWatcher = new FileSystemWatcher(dir)
+                {
+                    IncludeSubdirectories = true,
+                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.DirectoryName,
+                };
+                // Runs on the watcher's thread-pool thread. An in-flight event can
+                // race panel Dispose; Change on the disposed timer must not throw
+                // into the pool (that would take down the process).
+                void Rearm()
+                {
+                    try { _skillsPushTimer?.Change(300, System.Threading.Timeout.Infinite); }
+                    catch (ObjectDisposedException) { }
+                }
+                FileSystemEventHandler onChange = (_, _) => Rearm();
+                _skillsWatcher.Created += onChange;
+                _skillsWatcher.Changed += onChange;
+                _skillsWatcher.Deleted += onChange;
+                _skillsWatcher.Renamed += (_, _) => Rearm();
+                // A buffer overflow (many files at once) or loss of the watched dir
+                // kills the watcher silently; live refresh degrades to open/tab-switch/⟳
+                // only. Log it so the symptom is traceable. (No auto-recreate in V1.)
+                _skillsWatcher.Error += (_, e) =>
+                    Log.Write($"[CoRhino] Skills watcher error (live refresh stopped): {e.GetException()?.Message}");
+                _skillsWatcher.EnableRaisingEvents = true;
+            }
+            catch (Exception ex)
+            {
+                // No watcher just means no live refresh; the drawer still updates
+                // on open / tab switch / ⟳.
+                Log.Write($"[CoRhino] Skills watcher unavailable: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        // UI thread only (AsyncInvoke'd from the debounce timer).
+        void PushSkillsListToAllTabs()
+        {
+            if (!_webReady) return;
+            foreach (var tab in _tabs.Values)
+                SendSkillsList(tab);
+        }
+
+        // Scan + push one tab's view of the skill list. The payload is a JSON object
+        // literal, which is also valid JS source (System.Text.Json's default encoder
+        // escapes all non-ASCII, including U+2028/U+2029), so it is inlined as the
+        // onSkillsList argument.
+        void SendSkillsList(AgentTab tab)
+        {
+            if (!_webReady) return;
+            var json = SkillsCatalog.ToJson(tab.AgentId, SkillsCatalog.Scan(tab.SkillsLoadedAtUtc));
+            _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onSkillsList({json})");
+        }
+
+        // Open a SKILL.md with the OS default app. Only paths the catalog returned
+        // in its last scan are launchable, so the WebView cannot start arbitrary
+        // files through this message.
+        void OpenSkill(string? path)
+        {
+            if (path == null || !SkillsCatalog.IsKnownSkillPath(path))
+            {
+                Log.Write($"[CoRhino] openSkill rejected: {path ?? "<null>"}");
+                return;
+            }
+            try
+            {
+                System.Diagnostics.Process.Start(
+                    new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                Log.Write($"[CoRhino] openSkill failed: {ex.GetType().Name}: {ex.Message}");
+            }
         }
 
         void OnPtyData(AgentTab tab, byte[] data)
@@ -500,6 +622,8 @@ namespace CoRhino.Panel
             {
                 RhinoDoc.EndOpenDocument -= OnDocChangedRestartHost;
                 RhinoDoc.NewDocument -= OnDocChangedRestartHost;
+                _skillsWatcher?.Dispose();
+                _skillsPushTimer?.Dispose();
                 foreach (var tab in _tabs.Values) tab.Session.Dispose();
                 _tabs.Clear();
             }

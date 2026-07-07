@@ -49,6 +49,9 @@ Rhino プロセス
   `save-rhino-skill` メタスキルが規約どおり `skills/<name>/SKILL.md` を書き出す（手で置いてもよい。
   書き方は seed される `~/.corhino/skills/README.md` を参照）。全パネル・全タブに載り、
   実行中セッションへの反映は `/plugin reload-plugins`。
+- **スキル一覧ドロワー**: タブバー右端の ⚡ で、溜まったスキルの一覧（自作/同梱バッジ・説明）を
+  ターミナル横に表示する。保存直後のスキルはライブで現れ、未反映なら ⚠ が付き、ヘッダの ⟳ 一発で
+  アクティブなセッションに反映できる。「エディタで開く」で SKILL.md を直接編集。
 - **MCP ホスト起動**: `RHINO_MCP_AUTOSTART_PORT` をセットして hidden コマンド `_-MCPSpawn`
   を実行する（`MCPStart` の対話的ポート入力は runscript と相性が悪いため使わない）。
 
@@ -110,6 +113,7 @@ src/                        C# Rhino プラグイン
 ├── Commands/               "CoRhino" コマンド（パネルを開く）
 ├── Panel/
 │   ├── CoRhinoPanel.cs     WebView + xterm.js (タブ式)、ポート採番、複数 claude 起動、MCP ホスト起動
+│   ├── SkillsCatalog.cs    スキル一覧ドロワーのデータ層（スキャン + frontmatter パース）
 │   ├── Workspace.cs        ~/.corhino/sessions/<port>/<agentId>/ と .mcp.json / CLAUDE.md、
 │   │                       ~/.corhino/skills/（ユーザースキル plugin 骨格）の seed
 │   └── RhinoMcpInstaller.cs  Rhino-MCP-Platform の yak オンボーディング

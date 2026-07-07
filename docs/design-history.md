@@ -358,3 +358,46 @@ reopen 時の再 spawn 経路は `CoRhinoPanel._respawning` を `Interlocked` �
   2 本目の `--plugin-dir`。ディレクトリが無い install では黙ってスキップ（スキル無しでもセッションは成立）。
 - **検証**: ビルド pass（0 警告）、`claude plugin validate cc-plugin` pass、Rhino plugin dir への配送を確認。
   パネル内 claude での発動は要実機確認。
+
+## 追加決定 D9: Skills Drawer（スキル一覧ドロワー）（2026-07-07）
+
+**意図**: D8 でスキルが会話から動的に溜まるようになった一方、「何が溜まっていて・何がロード済みか」を
+確認する手段が会話しかなく、特に**保存したのに発動しない（reload 忘れ）**が非エンジニアには原因不明の
+挙動になる。パネル UX は CoRhino の責務そのものなので、可視化と reload のワンクリック化をパネルで提供する。
+設計書: [`plans/skills-drawer-design.md`](plans/skills-drawer-design.md)。
+
+### 判断と選択理由
+
+- **右サイドドロワー（260px 固定・アニメーションなし）**: ターミナルと同時に見えるので
+  「一覧を見ながら claude に依頼」できる。オーバーレイや専用タブは会話と排他になる。
+  アニメーションを付けないのは transition 中の FitAddon 連打を避けるため。
+- **needsReload = SKILL.md の mtime × タブごとの `SkillsLoadedAtUtc`**: claude 内部のロード状態は
+  外から読めない。spawn 時に初期化・⟳ で now に更新するタイムスタンプとの mtime 比較は近似だが、
+  誤検知は「⟳ を押せば必ず正しい状態に収束する」方向（false ⚠）にしか倒れない。タブごとに
+  spawn 時刻が違うため、ドロワーは常に**アクティブタブ視点**で表示する。
+- **⟳ は stdin 直叩きではなく専用メッセージ `reloadSkills`**: UI が PTY に直接書くと C# が reload の
+  事実を知れず ⚠ が消えない。「PTY 注入 + 時刻更新 + 一覧再送」を C# 側で 1 メッセージに束ねる。
+- **watcher push は常時・全タブ分、UI 側でフィルタ**: C# はアクティブタブを知らない（知るには開閉・
+  タブ切替の状態同期が要る）。全タブ分 push して UI が「アクティブタブの payload だけ描画・閉時は無視」
+  する方が状態機械が不要で壊れにくい。タブ数は高々数個なので冗長スキャンは実害なし。
+- **`openSkill` のパス検証**: WebView からのメッセージで任意パスを `Process.Start` させないよう、
+  直近 Scan が返した path 集合（`IsKnownSkillPath`）に含まれるものだけ開く。
+- **YAML ライブラリを入れない**: 読むのは frontmatter の `name:`/`description:` 単一行値のみ。
+  依存追加と .rhp サイズ増に見合わない。パーサは純粋関数に保ち将来のテスト導入に備えた。
+
+### 実装（SkillsCatalog.cs 新規、CoRhinoPanel.cs、ui/src/skills-drawer.ts 新規、main.ts）
+
+- メッセージ 3 種（`listSkills` / `openSkill` / `reloadSkills`）と `onSkillsList` を追加（→ architecture.md §3.2）。
+- `FileSystemWatcher`（`~/.corhino/skills/skills/` 再帰監視）+ 300ms one-shot Timer デバウンス。
+  watcher イベントはタイマー再アームのみ、push は UI スレッドに marshal。Dispose 直後の在飛行イベントが
+  破棄済み Timer に触って ObjectDisposedException をスレッドプールへ漏らさないよう catch を入れた。
+- **検証**: `dotnet build` pass（0 警告）・`tsc --noEmit` 0 エラー。実機（ドロワー開閉のリサイズ・
+  ライブ更新・⚠→⟳→● 遷移・openSkill）は未確認 → roadmap。Codex レビューゲートは codex CLI の
+  認証切れで未消化（代替に汎用レビューエージェントで1パス実施）→ roadmap。
+- **代替レビューの指摘と対応**: (1) watcher 起点のスキャンがディレクトリ削除と競合すると UI スレッドに
+  例外が漏れる → 列挙を try/catch（削除はまさに watcher を発火させる操作）。(2) frontmatter の
+  block scalar（`description: >` 等）が literal `">"` になる → フォールバック扱いに。(3) 閉じフェンスの
+  無い `---` は本文全体を frontmatter 扱いしてしまう → 閉じフェンス必須に。(4) ⚡ ボタンがタブ増加で
+  スクロールアウト（`margin-left:auto` は overflow で無効）→ タブ列を `#tabscroll` に分離し ⚡ を固定。
+  (5) watcher の `Error` 未購読でサイレント死 → ログ追加（V1 は再生成しない）。claude ビジー時の
+  ⟳ による false ● とタブ死亡時の残留表示は既知の限界として設計書に明記（V1 許容）。

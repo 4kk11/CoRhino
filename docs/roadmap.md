@@ -20,6 +20,13 @@ WIP / pre-alpha のため、ここの項目は予告なく増減・並び替え�
   現状は **agents 無し・素のツール直叩き**で E2E が成立している。
 - **plugin 配信の更新戦略**: marketplace 自動更新か submodule バンプかを確定する。
 
+## パネル UX
+
+- **Skills Drawer の実機確認**: 実装済み（2026-07-07、→ D9 /
+  [`plans/skills-drawer-tasks.md`](plans/skills-drawer-tasks.md) Phase 4）。ビルド・tsc は pass だが
+  実機（Rhino 8）でのドロワー開閉/リサイズ・ライブ更新・⚠→⟳→● の遷移・openSkill が未確認。
+  D8 の実機確認とまとめて行う。Codex レビューゲート（Phase 1–3）も codex の再ログイン待ちで未消化。
+
 ## オンボーディング
 
 - **claude CLI 未導入時の導線整理（旧 Phase 2b）**: 現状は `claude` が PATH に無いと
