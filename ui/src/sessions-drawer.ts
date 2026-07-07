@@ -32,6 +32,7 @@ export function createSessionsDrawer(opts: {
   requestList: () => void
   resumeSession: (sessionId: string) => void
   renameSession: (sessionId: string, name: string) => void
+  deleteSession: (sessionId: string) => void
   /** Called after open/close so main.ts can refit and enforce exclusivity. */
   onToggled: (open: boolean) => void
 }): SessionsDrawer {
@@ -120,6 +121,9 @@ export function createSessionsDrawer(opts: {
     head.appendChild(name)
     head.appendChild(time)
     head.appendChild(rename)
+    // No delete on a live session — the host would reject it anyway; hiding the
+    // affordance says "close the tab first" better than a dead button.
+    if (!session.isLive) head.appendChild(buildDeleteButton(session))
     row.appendChild(head)
 
     const hasSub = session.isLive || session.customName
@@ -149,6 +153,40 @@ export function createSessionsDrawer(opts: {
       row.title = L.liveRowHint
     }
     return row
+  }
+
+  // Two-step confirm: first click arms the button (shows 削除?), second click
+  // within 3s deletes. Native confirm() dialogs don't render reliably in the
+  // embedded WebView, and a lost transcript is unrecoverable — the arm step is
+  // the consent.
+  function buildDeleteButton(session: SessionInfo): HTMLElement {
+    const del = document.createElement('span')
+    del.className = 'ss-delete'
+    del.textContent = '🗑'
+    del.title = L.deleteSession
+    let armed = false
+    let timer: number | undefined
+    const disarm = () => {
+      armed = false
+      if (timer !== undefined) window.clearTimeout(timer)
+      del.classList.remove('armed')
+      del.textContent = '🗑'
+    }
+    del.addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (!armed) {
+        armed = true
+        del.classList.add('armed')
+        del.textContent = L.deleteConfirm
+        timer = window.setTimeout(disarm, 3000)
+        return
+      }
+      disarm()
+      opts.deleteSession(session.sessionId)
+      // The host deletes, rescans, and pushes a fresh list — no optimistic
+      // removal, so a rejected delete (e.g. raced a resume) self-corrects.
+    })
+    return del
   }
 
   // Swap the name span for an inline input. Enter = commit, Esc = cancel,
@@ -218,6 +256,13 @@ function injectStyles() {
   .ss-time { flex: 0 0 auto; color: #888; font-size: 11px; }
   .ss-rename { flex: 0 0 auto; color: #777; cursor: pointer; padding: 0 2px; border-radius: 2px; }
   .ss-rename:hover { color: #fff; background: #333; }
+  .ss-delete {
+    flex: 0 0 auto; color: #777; cursor: pointer; padding: 0 2px; border-radius: 2px;
+    font-size: 10px; white-space: nowrap;
+  }
+  .ss-delete:hover { color: #fff; background: #333; }
+  .ss-delete.armed { color: #fff; background: #a33; }
+  .ss-delete.armed:hover { background: #c44; }
   .ss-renameinput {
     flex: 1 1 auto; min-width: 0; background: #111; color: #ddd;
     border: 1px solid #444; border-radius: 2px; padding: 1px 4px;

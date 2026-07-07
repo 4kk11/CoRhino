@@ -620,6 +620,11 @@ namespace CoRhino.Panel
                         }
                         break;
 
+                    case "deleteSession":
+                        if (root.TryGetProperty("sessionId", out var deleteIdEl))
+                            DeleteSession(deleteIdEl.GetString());
+                        break;
+
                     case "debug":
                         if (root.TryGetProperty("message", out var msgEl))
                         {
@@ -847,6 +852,40 @@ namespace CoRhino.Panel
             AnnounceTab(tab);
             LaunchSessionInBackground(tab);
             RequestSessionsScan(); // the session just went live
+        }
+
+        // Delete a past session's transcript (the jsonl plus its subagents
+        // sidecar dir) and its custom name. Destructive and user-initiated — the
+        // drawer's 🗑 double-click confirm is the consent step; here we only
+        // enforce safety: allowlisted ids only (the WebView can't make us delete
+        // arbitrary files) and never a session that is currently attached to a
+        // tab in this process.
+        void DeleteSession(string? sessionId)
+        {
+            if (sessionId == null || !SessionsCatalog.TryGetKnown(sessionId, out var jsonlPath))
+            {
+                Log.Write($"[CoRhino] deleteSession rejected (unknown id): {sessionId ?? "<null>"}");
+                return;
+            }
+            if (LiveSessionIds.Contains(sessionId))
+            {
+                Log.Write($"[CoRhino] deleteSession rejected (session live): {sessionId}");
+                return;
+            }
+            try
+            {
+                if (File.Exists(jsonlPath)) File.Delete(jsonlPath);
+                // Subagent transcripts live in a sibling dir named after the session.
+                var subagentsDir = Path.Combine(Path.GetDirectoryName(jsonlPath) ?? string.Empty, sessionId);
+                if (Directory.Exists(subagentsDir)) Directory.Delete(subagentsDir, recursive: true);
+                SessionNames.Set(sessionId, null); // drop its custom name too
+                Log.Write($"[CoRhino] Deleted session {sessionId}.");
+            }
+            catch (Exception ex)
+            {
+                Log.Write($"[CoRhino] deleteSession failed ({sessionId}): {ex.GetType().Name}: {ex.Message}");
+            }
+            RequestSessionsScan();
         }
 
         // Persist a user-given session name (empty reverts to the auto title) and

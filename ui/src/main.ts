@@ -51,6 +51,7 @@ type Outbound =
   | { type: 'listSessions' }
   | { type: 'resumeSession'; sessionId: string }
   | { type: 'renameSession'; sessionId: string; name: string }
+  | { type: 'deleteSession'; sessionId: string }
   | { type: 'debug'; message: string }
 
 function post(msg: Outbound) {
@@ -201,6 +202,7 @@ ${isWindowsWebView2 ? `
     requestList: () => post({ type: 'listSessions' }),
     resumeSession: (sessionId) => post({ type: 'resumeSession', sessionId }),
     renameSession: (sessionId, name) => post({ type: 'renameSession', sessionId, name }),
+    deleteSession: (sessionId) => post({ type: 'deleteSession', sessionId }),
     onToggled: (open) => {
       if (open) drawer.close()
       if (activeTab) safeFit(activeTab)

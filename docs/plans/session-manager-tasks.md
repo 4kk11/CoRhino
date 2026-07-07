@@ -23,6 +23,7 @@
 
 - [x] 4-1 sessions-drawer.ts（🕘、一覧・相対時刻・実行中のみブロック・resume・✎ リネーム、編集中は再描画スキップ）
 - [x] 4-2 main.ts: プロトコル追従、タブラベル dblclick リネーム（prefill=手動名のみ）、ドロワー排他（skills-drawer に `close()` 追加）
+- [x] 4-3 セッション削除（`deleteSession`: allowlist + 非実行中ガード、jsonl + subagents dir + 名前を削除。UI は 🗑 2段階確認、live 行には非表示）
 
 ## レビュー
 
@@ -51,4 +52,6 @@
 - [ ] 6-8 `nc -l 10500` でポートをずらしても（10501 起動）旧セッションを resume できる
 - [ ] 6-9 最終タブ `/exit` → CoRhino 再実行 → 新 sessionId の agent-1、旧セッションは一覧から resume 可
 - [ ] 6-10 複数タブ並列（＋で2つ目）が正常起動し、各タブの .mcp.json（runtime/）が自パネルのポートを指す
-- [ ] 6-11 （Windows）slug エンコーディング・リネーム入力・`cmd.exe /c` 経由の `--resume`
+- [ ] 6-11 削除: 🗑 → 削除? → 確定で一覧から消え、`~/.claude/projects/<slug>/` から jsonl（と `<id>/` dir）が消える。1クリック目だけなら3秒で元に戻る
+- [ ] 6-12 言語追従: 日本語 Rhino で UI が日本語、英語 Rhino（TestToggleLanguage 等で切替→再起動）で UI・ダイアログ・新規 seed テンプレが英語になる
+- [ ] 6-13 （Windows）slug エンコーディング・リネーム入力・`cmd.exe /c` 経由の `--resume`

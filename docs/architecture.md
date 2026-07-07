@@ -178,6 +178,7 @@ Rhino がドキュメントごとに `new CoRhinoPanel(uint documentSerialNumber
 | `SpawnTab` | 次の agentId を採番 → 新規セッション ID 採番 → `AgentTab` 登録 → UI へ `onTabCreated` → 背景で claude 起動 | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `ResumeSession` | Sessions Drawer からの再開。allowlist（`SessionsCatalog.TryGetKnown`）＋ jsonl 存在＋非実行中（`LiveSessionIds`）を検証し、`Resume=true` の新規タブとして spawn | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `RenameSession` | 名前を `session-names.json` に永続化（空で削除）→ live タブなら `onTabLabel` → 一覧再送 | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
+| `DeleteSession` | トランスクリプト（jsonl + `<id>/` subagents dir）と名前を削除。allowlist＋非実行中のみ | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `LoadWebView` | `CORHINO_WEBUI_URL` があれば dev サーバ URL を、なければ plugin dir の `web/index.html` を `LoadHtml` | [:175](../src/Panel/CoRhinoPanel.cs#L175) |
 | `StartSession(tab)` | CLI 解決 → そのエージェントの session dir 準備 → claude を PTY で spawn（後述） | [:207](../src/Panel/CoRhinoPanel.cs#L207) |
 | `EnsureHostMcpStarted` | `RhinoApp.Idle` ワンショットで env var セット + `_-MCPSpawn` 発火（全タブ共有・1回） | [:266](../src/Panel/CoRhinoPanel.cs#L266) |
@@ -277,6 +278,9 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
 - `EnsureWorkspace()`: 共有 dir を作成し、`CLAUDE.md` を**存在しなければ**テンプレから seed（以後ユーザー
   所有、上書きしない）。テンプレは並列エージェントのルールを持つが、担当レイヤの**値**は持たない——
   それはセッション固有なので `--append-system-prompt` が届ける（→ 2.3 / D11）。戻り値 = claude の cwd。
+  テンプレ（CLAUDE.md・skills README/manifest も同様）は **seed 時点の Rhino 言語**（`L10n`）で書かれ、
+  以後ユーザー所有なので言語を変えても追従しない（作り直したければ削除して再 seed）。レイヤ指示の
+  `--append-system-prompt` とオンボーディングダイアログは spawn/表示のたびに現在の言語で出る。
 - `.mcp.json` の中身: サーバは1つだけ。全エージェントが同じポートを指すが、**`X-CoRhino-Agent` ヘッダ**で
   接続を区別する（将来のホスト側帰属/リース用フック。現状は未使用 → D7）。
   ```json
@@ -364,10 +368,15 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
   - **タブラベル**: 初期値は `onTabCreated` の `label`（手動名 > 自動タイトル > agentId を C# が計算）。
     ラベルの**ダブルクリック**でインライン `<input>` に切替（Enter=確定 / Esc=取消 / blur=確定、空で自動
     タイトルに戻す）→ `renameSession` を post。反映は C# の `onTabLabel` push を待つ（楽観描画しない）。
+- **言語**（`i18n.ts` + `L10n.cs`）: UI 文言は **Rhino の言語設定に追従**する（`AppearanceSettings.LanguageIdentifier`
+  が 1041=日本語なら日本語、それ以外は英語の2択）。C# が `LoadWebView` で単一 HTML の `<head>` に
+  `window.CORHINO_LANG` を注入し、シェルは boot 時に同期的に正しい言語で DOM を組む（dev サーバ経路は
+  注入点が無いのでブラウザロケールにフォールバック）。Rhino の言語変更は再起動必須なのでプロセス中は固定。
 - **ブリッジ** `post()`: 環境ごとに送信口が違う（macOS=`window.eto`、Windows=`window.chrome.webview`、レガシー=`window.external.notify`）。
 - **送信メッセージ（Outbound）**: `ready` / `createTab` / `closeTab{agentId}` / `stdin{agentId,data}` /
   `resize{agentId,cols,rows}` / `listSkills{agentId}` / `openSkill{path}` / `reloadSkills{agentId}` /
-  `listSessions` / `resumeSession{sessionId}` / `renameSession{sessionId,name}` / `debug`。
+  `listSessions` / `resumeSession{sessionId}` / `renameSession{sessionId,name}` /
+  `deleteSession{sessionId}` / `debug`。
 - **受信窓口** `window.CoRhinoPanel`: C# 側が `ExecuteScriptAsync` で呼ぶ。
   - `onTabCreated({agentId, sessionId, label})` → タブ＋xterm を生成しアクティブ化
   - `onPtyData(agentId, text)` → 該当タブの `term.write(text)`
@@ -386,7 +395,9 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
 - **Sessions Drawer**（`sessions-drawer.ts`）: 🕘 で開閉（開時に `listSessions` を要求）。行 =
   表示名（手動名 ?? 自動タイトル）+ 相対時刻。**実行中**（どこかのタブで開いているセッション）のみ
   グレー・クリック不可、それ以外はクリックで `resumeSession`。✎ でインラインリネーム（タブと同じ
-  Enter/Esc/blur 規約、編集中は push 再描画をスキップ）。タイトルはモデル/ユーザー由来テキストなので
+  Enter/Esc/blur 規約、編集中は push 再描画をスキップ）。🗑 で削除——ネイティブ `confirm()` は WebView で
+  当てにならないため**2段階確認**（1クリック目で「削除?」にアーム、3秒で自動解除、2クリック目で確定）。
+  実行中セッションには 🗑 を出さない。タイトルはモデル/ユーザー由来テキストなので
   **必ず `textContent`**。skills と違い一覧はタブ非依存（`handleSkillsList` のようなアクティブタブ
   フィルタは無い）。
 - xterm 設定: `convertEol: true`。Windows ConPTY の bare `\n` 階段化を `\r\n` 合成で吸収。
@@ -455,6 +466,7 @@ CoRhino は内部に4つの通信境界を持つ。バグはたいていこの�
 | `listSessions` | — | `RequestSessionsScan()`（BG スキャン → `onSessionsList`） |
 | `resumeSession` | `sessionId` | allowlist＋jsonl 存在＋非実行中を検証 → 新規タブに `--resume` で spawn |
 | `renameSession` | `sessionId, name` | `SessionNames.Set`（空で削除）→ live タブへ `onTabLabel` → 一覧再送 |
+| `deleteSession` | `sessionId` | allowlist＋非実行中を検証 → jsonl + subagents dir + 名前を削除 → 一覧再送 |
 | `debug` | `message` | `Log.Write("[Claude/UI] …")` |
 
 **C# → UI（`ExecuteScriptAsync` で `window.CoRhinoPanel` を呼ぶ）**
