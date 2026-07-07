@@ -40,11 +40,12 @@ localhost:10590 に立て、`codex exec`（codex-cli 0.142.5）で各構成を�
   - AGENTS.md: workspace 直下のものを読むことを実測確認（マーカー語が全応答に反映）
   - 副産物: `session_index.jsonl` は exec セッションを即時反映しない → カタログの一次情報にしない（設計書 5.5 反映済み）
 - [x] **0-7（追加発見）**: MCP ツール承認の仕様
-  - `mcp_servers.<name>.tools.<tool>.approval_mode` / `default_tools_approval_mode` = `auto` | `prompt` | `approve`。
-    `auto` = TUI でプロンプトなし実行（公式 docs）→ spawn 引数に `default_tools_approval_mode="auto"` を追加（設計書 4.3）
-  - **exec（非対話）モードは upstream バグで MCP ツール呼び出しが常に auto-cancel**
-    （debug ログで `ResolveElicitation decision: Cancel` を確認。openai/codex #24135 / #16685）。
-    CoRhino は TUI 利用なので影響なしだが、**tools/call の E2E は Phase 2 の Rhino 実機スモークが最終ゲート**（2-9 に明記）
+  - `mcp_servers.<name>.tools.<tool>.approval_mode` / `default_tools_approval_mode` = `auto` | `prompt` | `approve`
+  - **後日訂正（実機フィードバック）**: 当初 docs の記述から `auto`=プロンプトなしと解釈したが誤り。
+    `auto` は「codex が判断」で run_python 等の危険ツールには TUI で承認が出る。
+    **`approve` が「事前承認済み・プロンプトなし」** — approve なら exec モードでも tools/call が通ることを
+    実測（= Phase 0 で「upstream バグ #24135 により exec は常に auto-cancel」とした結論も、承認設定が
+    prompt 相当だったことが真因で、approve で回避可能だった）。spawn 引数は `approve` に修正済み
 
 ### 📋 Phase 0 完了処理
 - [x] **0-6**: 検証結果を設計書 2 章 / 3 章 D14 / 4.3 / 5.3 / 5.5 / 6 章に反映済み。ユーザー報告済み
@@ -106,7 +107,7 @@ localhost:10590 に立て、`codex exec`（codex-cli 0.142.5）で各構成を�
 - [x] **2-9**: ビルド ✅ + 生成引数の codex 実 CLI 検証 ✅ + 実機スモーク ✅（2026-07-07 ユーザー確認）
   - codex タブ作成 → Rhino-MCP ツールが `mcp__rhino` 名前空間で見える → `run_python` 等で実操作
     （**tools/call の E2E 最終ゲート**。Phase 0 では exec の upstream バグで TUI 未検証。
-    `default_tools_approval_mode="auto"` でプロンプトなしに実行されることをここで確認）
+    `default_tools_approval_mode` でプロンプトなしに実行されることをここで確認 — 実機で auto では不十分と判明し approve に修正）
   - レイヤ指示（`developer_instructions`）が効いている（採番レイヤ配下に作図する）
   - claude タブとの並列動作、`~/.codex/config.toml` が無変更であること
   - タブ増減（codex 連続作成での直列化挙動含む）、codex タブの ×/exit → タブ撤去

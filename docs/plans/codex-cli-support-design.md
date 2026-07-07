@@ -46,7 +46,7 @@ codex-cli 0.142.5 のローカル実機（自作 streamable-HTTP MCP サーバ +
 | MCP 隔離注入 | `--strict-mcp-config --mcp-config <file>` | **`-c 'mcp_servers={...}' は全置換ではなくマージ**。隔離は「既存サーバ個別 disable + plugins 一括 disable + rhino 追加」の合成で実現（→ 4.3） | ✅ 実測 |
 | HTTP MCP | `"type": "http"` | streamable HTTP 正式サポート。initialize→initialized→tools/list の POST + GET SSE チャネルを確認 | ✅ 実測 |
 | HTTP ヘッダ | `headers` フィールド | `http_headers`。`X-CoRhino-Agent` の全リクエスト到達を確認 | ✅ 実測 |
-| MCP ツール承認 | claude 側の permission 機構 | `default_tools_approval_mode` / `tools.<name>.approval_mode`（`auto`=プロンプトなし実行 / `prompt` / `approve`）。**exec モードは upstream バグで常に auto-cancel**（[#24135](https://github.com/openai/codex/issues/24135)）だが TUI は `auto` で動く（公式 docs 確認。tools/call の E2E は Phase 2 実機ゲート） | ✅ 設定確認 / ⚠ TUI 実機ゲート |
+| MCP ツール承認 | claude 側の permission 機構 | `default_tools_approval_mode` / `tools.<name>.approval_mode` = `auto` \| `prompt` \| `approve`。**`approve` が「事前承認済み・プロンプトなし」**（実測: exec でも tools/call が通る）。`auto` は「codex が判断」で run_python 等の危険ツールは承認を求める（実機で発覚し auto → approve に修正）。docs の「auto=プロンプトなし」記述は不正確 | ✅ 実測 |
 | セッション ID 固定 | `--session-id <GUID>`（spawn 時に C# 採番） | **不可**（codex が生成） | ✅ |
 | resume | `--resume <id>`（cwd 一致必須） | `codex resume <UUID>`。**別 cwd から動作・`-c` オーバーライド併用可・同一 rollout に追記** | ✅ 実測 |
 | トランスクリプト | `~/.claude/projects/<cwd-slug>/*.jsonl` | `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`。1 行目 `session_meta` に `id` / `cwd` / `originator` / `source`。**起動数秒内に生成** | ✅ 実測 |
@@ -146,7 +146,7 @@ claude --strict-mcp-config --mcp-config <runtime/mcp-<port>-<agentId>.json>
 codex -a never -s workspace-write                       # 承認プロンプトなし・サンドボックス内自動実行
       --disable plugins
       -c 'mcp_servers.<name>.enabled=false'          # ユーザー config.toml の実在エントリごとに繰り返し
-      -c 'mcp_servers.rhino={url="http://localhost:<port>/",http_headers={"X-CoRhino-Agent"="<agentId>"},default_tools_approval_mode="auto"}'
+      -c 'mcp_servers.rhino={url="http://localhost:<port>/",http_headers={"X-CoRhino-Agent"="<agentId>"},default_tools_approval_mode="approve"}'
       -c 'projects."<workspace>".trust_level="trusted"'   # 初回 trust プロンプト抑止（config.toml へ書かせない）
       -c 'developer_instructions="<レイヤ指示>"'
 
@@ -156,7 +156,7 @@ codex resume <sessionId> --disable plugins -c ... （同上）
 
 - `-c` の値は TOML inline table としてパースされる。`mcp_servers` はマージ挙動のため、既存サーバの排除は D14 の合成レシピで行う
 - `<name>` の列挙は spawn 時に `~/.codex/config.toml` の `[mcp_servers.<name>]` テーブルヘッダを軽量パース（読み取りのみ）。パース失敗時は disable 群を諦めて rhino 追加だけで spawn し、`Log.Write` に記録（起動不能より共存を選ぶ）
-- `default_tools_approval_mode="auto"` で rhino ツールは TUI で承認プロンプトなしに実行される（公式 docs 確認済み。E2E は Phase 2 実機ゲート）
+- `default_tools_approval_mode="approve"` で rhino ツールは承認プロンプトなしに実行される（`approve`=事前承認済み。`auto` は codex 判断で危険ツールに承認を求める — 実機フィードバックで発覚し修正・実測確認）
 - `developer_instructions` は既存指示への**追記**で TUI に表示されない（実測確認）。claude の `--append-system-prompt` と等価に使う
 - codex は `.mcp.json` 相当のファイルを必要としない → `Workspace.EnsureAgentMcpConfig` は claude 専用のまま
 - 承認ポリシーは `-a never` + `-s workspace-write`（当初は「codex の既定に任せる」だったが、既定の

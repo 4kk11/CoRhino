@@ -91,14 +91,18 @@ namespace CoRhino.Cli
                 args.Add($"mcp_servers.{TomlKeySegment(name)}.enabled=false");
             }
 
-            // (3) This panel's rhino server. default_tools_approval_mode=auto →
-            // rhino tools run without a TUI approval prompt. The header tags the
-            // connection per agent (future host-side attribution/lease hook).
+            // (3) This panel's rhino server. default_tools_approval_mode=approve
+            // (NOT auto): approve = pre-approved, no prompt ever; auto = codex
+            // decides and still prompts for risky tools like run_python
+            // (spike-verified — with approve, tools/call goes straight through,
+            // even in exec mode). Opening the panel is the consent for rhino
+            // tools. The header tags the connection per agent (future host-side
+            // attribution/lease hook).
             args.Add("-c");
             args.Add(
                 $"mcp_servers.rhino={{url={TomlString($"http://localhost:{ctx.HostPort}/")}," +
                 $"http_headers={{{TomlString("X-CoRhino-Agent")}={TomlString(ctx.AgentId)}}}," +
-                $"default_tools_approval_mode={TomlString("auto")}}}");
+                $"default_tools_approval_mode={TomlString("approve")}}}");
 
             // The workspace is CoRhino's own dir; opening the panel is the
             // consent. Without this codex's first-run trust prompt blocks the

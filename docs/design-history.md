@@ -672,8 +672,10 @@ spawn トレース・env keys・セッションスキャン等の診断ノイズ
 
 - スパイク（自作 streamable-HTTP MCP サーバ + `codex exec`、0.142.5）で確定した事実:
   `-c 'mcp_servers={...}'` は**全置換ではなくマージ**、`--ignore-user-config` は exec 専用、
-  `http_headers` は全リクエストに到達、`default_tools_approval_mode="auto"` で TUI は承認プロンプトなし
-  （exec は upstream バグ #24135 で常に auto-cancel — TUI 利用の CoRhino には無関係）、
+  `http_headers` は全リクエストに到達、MCP ツール承認は `default_tools_approval_mode="approve"`
+  （**approve = 事前承認済み・プロンプトなし**。当初 `auto` を採ったが auto は「codex が判断」で
+  run_python 等にプロンプトが出る — 実機フィードバックで発覚し修正。approve なら exec モードでも
+  tools/call が通るため、Phase 0 で「exec の upstream バグ #24135」とした現象も実は承認設定で回避可能だった）、
   `-c developer_instructions` が `--append-system-prompt` の等価物（追記・不可視・実測）
 - 合成レシピ: `--disable plugins`（プラグイン注入サーバを一括排除）+ config.toml の実在
   `[mcp_servers.*]` を個別 `enabled=false` + rhino 追加 + `projects.<workspace>.trust_level`
