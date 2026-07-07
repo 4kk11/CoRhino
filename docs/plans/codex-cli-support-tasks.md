@@ -103,7 +103,7 @@ localhost:10590 に立て、`codex exec`（codex-cli 0.142.5）で各構成を�
 - [x] **2-7**: C# — `createTab {cli}` 受理、`onTabCreated {cli}` / `onCliAvailability`（ready 時 BG プローブ 1 回）/
   `onTabSession` push、codex タブの `listSkills`/`reloadSkills` ガード
 - [x] **2-8**: UI — codex タブがアクティブな間 ⚡ を disabled（`SkillsDrawer.setEnabled`、ツールチップ切替）
-- [ ] **2-9**: ビルド ✅（0 警告 0 エラー、tsc + vite 込み）+ 生成引数の codex 実 CLI 検証 ✅ / **実機スモーク未**
+- [x] **2-9**: ビルド ✅ + 生成引数の codex 実 CLI 検証 ✅ + 実機スモーク ✅（2026-07-07 ユーザー確認）
   - codex タブ作成 → Rhino-MCP ツールが `mcp__rhino` 名前空間で見える → `run_python` 等で実操作
     （**tools/call の E2E 最終ゲート**。Phase 0 では exec の upstream バグで TUI 未検証。
     `default_tools_approval_mode="auto"` でプロンプトなしに実行されることをここで確認）
@@ -131,13 +131,15 @@ localhost:10590 に立て、`codex exec`（codex-cli 0.142.5）で各構成を�
 - [x] **3-2**: `RequestSessionsScan` で両カタログをマージ（`cli` フィールド付与、updated 降順の一体ソート）
 - [x] **3-3**: resume の CLI 振り分け（カタログ横断で Kind 特定 → 該当アダプタで spawn。ID は UUID なので衝突しない）
   - transcript 存在再検証 + `IsSessionBlocked` ガード（下記）
-- [x] **3-4**: delete の codex 経路（`CodexSessionsCatalog.Delete` = `codex delete <id>`、10s bound、
+- [x] **3-4**: delete の codex 経路（`CodexSessionsCatalog.Delete` = `codex delete --force <id>`、10s bound、
   失敗時は一覧維持 + ログ。索引・アーカイブの整合を CLI に任せるためファイル直接削除はしない）
+  - 実機バグ修正: `--force` 無しだと非対話端末で確認プロンプトが出せず exit 1
+    （"cannot confirm session deletion without an interactive terminal"）。ドロワーの 🗑 2 段階確認が
+    同意ステップなので `--force` を付与。非対話条件（stdin 閉鎖）で削除成功を実地検証済み
 - [x] **3-5**: rename は `SessionNames` 共用で codex にも効く。`ComputeLabel` を CLI 別カタログ振り分けに変更
   （live codex タブの自動タイトルも反映）
 - [x] **3-6**: UI — `sessions-drawer.ts` の行頭に CLI バッジ（● / ◆、タブと同一スタイル）
-- [ ] **3-7**: ビルド ✅（0 警告 0 エラー）/ **実機スモーク未**（codex セッションの一覧表示・resume でレイヤ復元・
-  rename・delete・実行中/pending グレーアウト）
+- [x] **3-7**: ビルド ✅ + 実機スモーク ✅（2026-07-07 ユーザー確認。delete のみ `--force` 欠落で失敗 → 修正・検証済み）
 
 ### 📋 Codex レビュー
 - [x] **3-8**: 実施済み（2 ラウンド）

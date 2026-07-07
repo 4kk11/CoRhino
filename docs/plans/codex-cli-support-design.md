@@ -54,7 +54,7 @@ codex-cli 0.142.5 のローカル実機（自作 streamable-HTTP MCP サーバ +
 | 自動タイトル | jsonl 内 `ai-title` | `session_index.jsonl` の `thread_name`（ベストエフォート） | ✅ |
 | システムプロンプト注入 | `--append-system-prompt` | **`-c developer_instructions="..."`**（既存指示に追記・TUI に不可視・実効を実測確認） | ✅ 実測 |
 | ワークスペース指示 | `CLAUDE.md` | `AGENTS.md`（cwd から自動ロード、実効を実測確認） | ✅ 実測 |
-| セッション削除 | ファイル直接削除 | `codex delete <id>`（索引も掃除される） | ✅ |
+| セッション削除 | ファイル直接削除 | `codex delete --force <id>`（索引も掃除される。`--force` 必須: 非対話端末では確認プロンプトを出せず exit 1 — 実機で確認） | ✅ 実測 |
 | スキル/プラグイン | `--plugin-dir`（隔離ロード） | `codex plugin` / `~/.codex/skills`（隔離注入手段は未確認） | スコープ外 |
 
 ---
@@ -253,7 +253,7 @@ SendSessionsList:
 |---|---|---|
 | resume | `--resume <id>` で新規タブ spawn | `codex resume <id>` で新規タブ spawn（タブの Kind=Codex） |
 | rename | `SessionNames` | 同じ `SessionNames`（id は UUID なので衝突しない） |
-| delete | jsonl + subagents dir 削除 | `codex delete <id>` を Process 実行（索引・アーカイブの整合を CLI に任せる） |
+| delete | jsonl + subagents dir 削除 | `codex delete --force <id>` を Process 実行（`--force` 必須: 非対話端末では確認プロンプトを出せず exit 1。索引・アーカイブの整合を CLI に任せる） |
 | allowlist | `TryGetKnown`（直近 Scan の id のみ） | 同型の allowlist を CodexSessionsCatalog に持つ |
 
 ### 5.6 UI（タブバー・メニュー・バッジ）
