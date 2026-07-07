@@ -12,7 +12,7 @@ namespace CoRhino.Cli
 {
     /// <summary>
     /// The codex CLI adapter. Isolation stance (spike-verified 2026-07-07,
-    /// codex-cli 0.142.5 — see plans/codex-cli-support-design.md D13/D14/D15):
+    /// codex-cli 0.142.5 — see plans/codex-cli-support-design.md D14/D15/D16):
     /// codex has no --strict-mcp-config equivalent and -c 'mcp_servers={...}'
     /// MERGES instead of replacing, so isolation is composed per spawn from
     /// (1) --disable plugins (kills plugin-injected MCP servers that never
@@ -64,6 +64,18 @@ namespace CoRhino.Cli
                 args.Add("resume");
                 args.Add(ctx.SessionId);
             }
+
+            // Approval-free but sandboxed: never prompt for shell commands
+            // (failures return to the model), writes confined to the workspace
+            // cwd + tmp. The panel's real tool path is MCP (unsandboxed, already
+            // auto via default_tools_approval_mode below) — codex's own default
+            // (on-request) would nag for every shell command, which defeats the
+            // "just open the panel" goal. Deliberately NOT --dangerously-*: the
+            // sandbox stays on.
+            args.Add("-a");
+            args.Add("never");
+            args.Add("-s");
+            args.Add("workspace-write");
 
             // (1) Plugins inject MCP servers (and tools) that config.toml never
             // mentions — disable the whole feature for this session.
@@ -231,7 +243,7 @@ namespace CoRhino.Cli
             Regex.IsMatch(name, "^[A-Za-z0-9_-]+$") ? name : TomlString(name);
 
         // ------------------------------------------------------------------
-        // Session id discovery (D14)
+        // Session id discovery (D15)
 
         // Rollout files already matched to some tab, across all panels in this
         // process. Guarded by its own lock (discovery runs on background

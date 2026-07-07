@@ -28,7 +28,7 @@ CoRhino のタブ（＝エージェント）は現在 `claude` CLI 専用。こ�
 | 論点 | 決定 |
 |---|---|
 | 選択単位 | **タブごと**（1 パネル内に claude / codex 混在可） |
-| スコープ | **段階的フル対応**: Phase 1-2 = 起動 + MCP 接続 + レイヤ分離、Phase 3 = Sessions Drawer。Skills Drawer は codex の skills 機構検証後に判断（今回スコープ外 → roadmap） |
+| スコープ | **段階的フル対応**: Phase 1-2 = 起動 + MCP 接続 + レイヤ分離、Phase 3 = Sessions Drawer。Skills Drawer は当初スコープ外としたが、機構調査（→ 5.8 / D18）を経て **Phase 3b で対応済み** |
 | 設定分離 | **`-c` オーバーライドで `mcp_servers` テーブルを全置換**。`~/.codex/config.toml`・auth.json は無変更（再ログイン不要） |
 | 抽象化 | **CLI アダプタ層（`IAgentCli`）を導入**。claude 固有ロジックを `CoRhinoPanel` から追い出す |
 | タブ作成 UI | **＋クリックでミニメニュー**（Claude Code / Codex）。未導入 CLI はグレーアウト。タブに CLI 種別バッジ |
@@ -55,17 +55,17 @@ codex-cli 0.142.5 のローカル実機（自作 streamable-HTTP MCP サーバ +
 | システムプロンプト注入 | `--append-system-prompt` | **`-c developer_instructions="..."`**（既存指示に追記・TUI に不可視・実効を実測確認） | ✅ 実測 |
 | ワークスペース指示 | `CLAUDE.md` | `AGENTS.md`（cwd から自動ロード、実効を実測確認） | ✅ 実測 |
 | セッション削除 | ファイル直接削除 | `codex delete --force <id>`（索引も掃除される。`--force` 必須: 非対話端末では確認プロンプトを出せず exit 1 — 実機で確認） | ✅ 実測 |
-| スキル/プラグイン | `--plugin-dir`（隔離ロード） | `<cwd>/.agents/skills/` の配置規約（symlink 可）で cwd 限定注入。in-session reload なし・bundled mount 不可（→ 5.8） | ✅ 実測（追加調査） |
+| スキル/プラグイン | `--plugin-dir`（隔離ロード） | `<cwd>/.agents/skills/` + `<cwd>/.codex/skills/` の配置規約（symlink 可）で cwd 限定注入。in-session reload のみ無し（→ 5.8） | ✅ 実測（追加調査） |
 
 ---
 
 ## 3. 設計判断（なぜこの形か）
 
-- **D12: CLI アダプタ層 `IAgentCli`** — spawn 引数・セッション同定・カタログ・レイヤ注入の CLI 差分をアダプタに閉じ込める。`CoRhinoPanel` は「タブに紐付いたアダプタを呼ぶ」だけになり、3 つ目の CLI 追加時にオーケストレータを触らない。pre-alpha の破壊的変更 OK 方針なので、claude 経路も同時にアダプタへ移す（互換シムを作らない）。
-- **D13: codex の隔離は「個別 disable + plugins 一括 disable + rhino 追加」の `-c` 合成** — `CODEX_HOME` 分離は auth まで分離され再ログインが必要になり、「パネルを開くだけ」のオンボーディング目標に反する。当初案の `-c 'mcp_servers={...}'` 全置換は**スパイクでマージ挙動と判明**したため、(1) `~/.codex/config.toml` の `[mcp_servers.*]` 実在エントリを `enabled=false` で個別無効化、(2) プラグイン注入分（computer-use / github 等、config.toml に現れない）は `--disable plugins` で一括排除、(3) rhino を追加、の合成で同じ結果（**rhino のみ enabled**）を得る。実測で確認済み。副作用: CoRhino が spawn 時にユーザーの config.toml から `[mcp_servers.<name>]` テーブル名を読む（読み取りのみ・軽量パース）。実在しない名前に `enabled=false` を当てると設定エラーになるため、実在名だけを対象にする。`--ignore-user-config`（完全無視 + auth 維持）は exec 専用で TUI に無く不採用。
-- **D14: codex のセッション ID は事後発見** — codex は ID 固定不可。spawn 時刻を記録し、`~/.codex/sessions/` の新規 rollout（ファイル名に UUID、1 行目 `session_meta.cwd` == 共有 workspace）を突合して確定する。確定までタブの `SessionId` は null（= claude の shell フォールバックと同じ既存の扱い。resume ガード `LiveSessionIds` への登録も確定時）。
-- **D15: codex のレイヤは C# 採番トークン + 永続マッピング** — claude はレイヤを `LayerFor(sessionId)` で決定的導出するが、codex は spawn 時に ID が無いので導出できない。spawn 時に C# がトークン（`s-<8hex>`）を採番して注入し、ID 確定後に `~/.corhino/session-layers.json`（sessionId→layer）へ永続化する。resume 時はこのマッピングから同じレイヤを復元する。
-- **D16: codex は AGENTS.md、claude は CLAUDE.md を同一テンプレから seed** — 共有 workspace の並列エージェントルールは CLI に依存しない。テンプレを共通化し、`EnsureWorkspace` が両ファイルを「無ければ seed」（以後ユーザー所有、既存方針どおり）。
+- **D13: CLI アダプタ層 `IAgentCli`** — spawn 引数・セッション同定・カタログ・レイヤ注入の CLI 差分をアダプタに閉じ込める。`CoRhinoPanel` は「タブに紐付いたアダプタを呼ぶ」だけになり、3 つ目の CLI 追加時にオーケストレータを触らない。pre-alpha の破壊的変更 OK 方針なので、claude 経路も同時にアダプタへ移す（互換シムを作らない）。
+- **D14: codex の隔離は「個別 disable + plugins 一括 disable + rhino 追加」の `-c` 合成** — `CODEX_HOME` 分離は auth まで分離され再ログインが必要になり、「パネルを開くだけ」のオンボーディング目標に反する。当初案の `-c 'mcp_servers={...}'` 全置換は**スパイクでマージ挙動と判明**したため、(1) `~/.codex/config.toml` の `[mcp_servers.*]` 実在エントリを `enabled=false` で個別無効化、(2) プラグイン注入分（computer-use / github 等、config.toml に現れない）は `--disable plugins` で一括排除、(3) rhino を追加、の合成で同じ結果（**rhino のみ enabled**）を得る。実測で確認済み。副作用: CoRhino が spawn 時にユーザーの config.toml から `[mcp_servers.<name>]` テーブル名を読む（読み取りのみ・軽量パース）。実在しない名前に `enabled=false` を当てると設定エラーになるため、実在名だけを対象にする。`--ignore-user-config`（完全無視 + auth 維持）は exec 専用で TUI に無く不採用。
+- **D15: codex のセッション ID は事後発見** — codex は ID 固定不可。spawn 時刻を記録し、`~/.codex/sessions/` の新規 rollout（ファイル名に UUID、1 行目 `session_meta.cwd` == 共有 workspace）を突合して確定する。確定までタブの `SessionId` は null（= claude の shell フォールバックと同じ既存の扱い。resume ガード `LiveSessionIds` への登録も確定時）。
+- **D16: codex のレイヤは C# 採番トークン + 永続マッピング** — claude はレイヤを `LayerFor(sessionId)` で決定的導出するが、codex は spawn 時に ID が無いので導出できない。spawn 時に C# がトークン（`s-<8hex>`）を採番して注入し、ID 確定後に `~/.corhino/session-layers.json`（sessionId→layer）へ永続化する。resume 時はこのマッピングから同じレイヤを復元する。
+- **D17: codex は AGENTS.md、claude は CLAUDE.md を同一テンプレから seed** — 共有 workspace の並列エージェントルールは CLI に依存しない。テンプレを共通化し、`EnsureWorkspace` が両ファイルを「無ければ seed」（以後ユーザー所有、既存方針どおり）。
 
 ---
 
@@ -143,7 +143,8 @@ claude --strict-mcp-config --mcp-config <runtime/mcp-<port>-<agentId>.json>
 
 ```
 # 新規:
-codex --disable plugins
+codex -a never -s workspace-write                       # 承認プロンプトなし・サンドボックス内自動実行
+      --disable plugins
       -c 'mcp_servers.<name>.enabled=false'          # ユーザー config.toml の実在エントリごとに繰り返し
       -c 'mcp_servers.rhino={url="http://localhost:<port>/",http_headers={"X-CoRhino-Agent"="<agentId>"},default_tools_approval_mode="auto"}'
       -c 'projects."<workspace>".trust_level="trusted"'   # 初回 trust プロンプト抑止（config.toml へ書かせない）
@@ -153,12 +154,14 @@ codex --disable plugins
 codex resume <sessionId> --disable plugins -c ... （同上）
 ```
 
-- `-c` の値は TOML inline table としてパースされる。`mcp_servers` はマージ挙動のため、既存サーバの排除は D13 の合成レシピで行う
+- `-c` の値は TOML inline table としてパースされる。`mcp_servers` はマージ挙動のため、既存サーバの排除は D14 の合成レシピで行う
 - `<name>` の列挙は spawn 時に `~/.codex/config.toml` の `[mcp_servers.<name>]` テーブルヘッダを軽量パース（読み取りのみ）。パース失敗時は disable 群を諦めて rhino 追加だけで spawn し、`Log.Write` に記録（起動不能より共存を選ぶ）
 - `default_tools_approval_mode="auto"` で rhino ツールは TUI で承認プロンプトなしに実行される（公式 docs 確認済み。E2E は Phase 2 実機ゲート）
 - `developer_instructions` は既存指示への**追記**で TUI に表示されない（実測確認）。claude の `--append-system-prompt` と等価に使う
 - codex は `.mcp.json` 相当のファイルを必要としない → `Workspace.EnsureAgentMcpConfig` は claude 専用のまま
-- サンドボックス/承認ポリシーは codex の既定に任せる（TUI で対話するのはユーザー自身。CoRhino が `--dangerously-*` を注入することは**しない**）
+- 承認ポリシーは `-a never` + `-s workspace-write`（当初は「codex の既定に任せる」だったが、既定の
+  on-request はシェルコマンドごとに承認を求め「パネルを開くだけ」の目標に反するため実機フィードバックで
+  改訂）。サンドボックスは維持され書き込みは workspace + tmp に限定。`--dangerously-*` は**注入しない**
 
 ---
 
@@ -176,7 +179,7 @@ CLI を拾えなくなる — Phase 1 Codex レビュー指摘で当初案から
 - Windows: `where.exe <bin>` + `.cmd` shim 解決（現行と同じ。codex も npm 配布なので shim 対策がそのまま効く）
 - codex が見つからない場合: ＋メニューの Codex 項目をグレーアウト（→ 5.6）。**shell フォールバックはしない**（明示選択制なので、無いものは選ばせないのが正しい）
 
-### 5.2 codex セッション ID の事後発見（D14）
+### 5.2 codex セッション ID の事後発見（D15）
 
 ```
 spawn 直前: SpawnedAtUtc を記録
@@ -188,7 +191,7 @@ spawn 後 BG タスク（DiscoverSessionIdAsync）:
   5. 未発見なら 500ms 間隔でリトライ（上限 ~15s。TUI 起動が遅い環境を考慮）
 確定時（UI スレッドへ AsyncInvoke、タブ生存を ReferenceEquals で確認）:
   - tab.SessionId = id / LiveSessionIds へ登録 / onTabSession を UI へ push（rename に必要）
-  - SessionLayers.Set(id, layerToken) を永続化（D15。タブ消滅後でも永続化はする — その rollout の実態）
+  - SessionLayers.Set(id, layerToken) を永続化（D16。タブ消滅後でも永続化はする — その rollout の実態）
 ```
 
 - **並列 spawn の競合（帰属保証）**: 全 codex タブが同一 cwd を共有するため、「新しい rollout + cwd 一致」だけでは
@@ -202,7 +205,7 @@ spawn 後 BG タスク（DiscoverSessionIdAsync）:
 - **発見失敗時**: `SessionId` は null のまま動作継続（ターミナルとしては完全に機能する）。resume 対象にならない・レイヤマッピングが残らないだけ。`Log.Write` に記録
 - 走査は必ず BG スレッド（SessionsCatalog と同じ規律）。読むのは 1 行目のみで軽量
 
-### 5.3 codex へのレイヤ指示注入（D15）
+### 5.3 codex へのレイヤ指示注入（D16）
 
 **`-c developer_instructions="<指示>"`** で注入する（スパイクで確定）。既存指示への**追記**であり、
 TUI には表示されず、AGENTS.md とも併存する（両方の実効を同一セッションで実測確認済み）。
@@ -214,7 +217,7 @@ TUI には表示されず、AGENTS.md とも併存する（両方の実効を同
 
 `SessionLayers.cs` は `SessionNames.cs` と同型（`~/.corhino/session-layers.json`、lock + write-through、V1 では剪定しない）。
 
-### 5.4 共有ワークスペース（D16）
+### 5.4 共有ワークスペース（D17）
 
 - `Workspace.EnsureWorkspace()` が `CLAUDE.md` に加えて `AGENTS.md` も「無ければ seed」する
 - テンプレ本文は共通化する（現行 CLAUDE.md テンプレの内容は CLI 非依存: 並列エージェントルール・RhinoMCP ツール・進め方）。symlink ではなく**別ファイルとして seed**（ユーザーが CLI ごとに育て分けられる余地を残す。既存の「seed 後はユーザー所有」方針とも整合）
@@ -348,15 +351,14 @@ codex は symlink 先の `.claude-plugin/plugin.json` も認識し、スキル�
 ## 7. ドキュメント追従（同一作業内で必須）
 
 - `README.md`: codex 対応の使い方・要件
-- `docs/architecture.md`: 2 章に `Cli/` 追加、3.2 プロトコル表更新、7 章に D12–D16
-- `docs/design-history.md`: D12–D16 の判断記録（本設計書から要約を移す）
+- `docs/architecture.md`: 2 章に `Cli/` 追加、3.2 プロトコル表更新、7 章に D14–D17
+- `docs/design-history.md`: D14–D17 の判断記録（本設計書から要約を移す）
 - `docs/roadmap.md`: 「codex Skills Drawer 対応」「codex ID 回転追跡」「Windows 検証」を追記
 
 ---
 
 ## 8. スコープ外（明示）
 
-- codex タブでの Skills Drawer / plugin 隔離ロード（→ roadmap）
 - 初回タブ CLI の設定化・記憶（常に claude で固定）
 - `codex fork` / `archive` の UI 対応
-- CODEX_HOME 分離方式（不採用の判断は D13 に記録）
+- CODEX_HOME 分離方式（不採用の判断は D14 に記録）

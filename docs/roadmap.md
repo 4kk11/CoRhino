@@ -32,8 +32,10 @@ WIP / pre-alpha のため、ここの項目は予告なく増減・並び替え�
   リネーム永続・ドロワー排他）が未了。チェックリストは tasks ファイル参照。
 - **セッション管理の先送り分（D10/D11 の続き）**:
   - **Windows 対応ゲート**: `~/.claude/projects` の slug エンコーディング（`C:\` の `\`・`:`）が未検証。
-    Windows で機能を有効と言う前に必須。
-  - **`/clear` の ID 回転追跡**: タブの `SessionId` が stale になる（リネーム・レイヤ指示が旧 ID に付く）。
+    codex 分も同様: rollout パス・config.toml パースの Windows パス、および **workspace スキル symlink**
+    （Developer Mode / 権限が無いと `CreateSymbolicLink` が失敗する — junction かコピーへのフォールバック要検討。
+    現状は一度だけログして codex タブがスキル無しで動く）。Windows で機能を有効と言う前に必須。
+  - **`/clear`（claude）/ `/new`（codex）の ID 回転追跡**: タブの `SessionId` が stale になる（リネーム・レイヤ指示が旧 ID に付く）。
   - **タブ構成の自動復元**: パネル再オープン時に前回タブを `--continue` で復元（今回スコープ外と決定）。
   - **クロスプロセスの二重 resume ガード**: `LiveSessionIds` はプロセス内のみ。Windows の 2 Rhino から
     同一セッションを resume できてしまう。
@@ -41,10 +43,27 @@ WIP / pre-alpha のため、ここの項目は予告なく増減・並び替え�
     他パネルの実行中解除も自パネルの次の契機まで反映されない）。
   - **session-names.json の剪定**: 消えたセッションの孤児エントリを掃除する仕組み。
 
+## Codex CLI 対応の残り（D13–D18 の続き）
+
+タブ単位の codex 対応（起動・MCP 隔離・レイヤ・Sessions Drawer・スキル mount）は実装済み
+（→ [`plans/codex-cli-support-tasks.md`](plans/codex-cli-support-tasks.md) / design-history D13–D18）。残り:
+
+- **グローバル codex スキルの混入抑止**: ユーザーの `~/.codex/skills` / `~/.agents/skills` は codex
+  セッションに常に載り、CLI から抑止できない（無効化 API は app-server 専用）。隔離が claude より弱い
+  既知の制約。codex 側に session-scoped な抑止手段が生えたら追従
+- **codex セッションタイトルの改善**: `session_index.jsonl` は遅延・欠落する（exec セッションは載らない）。
+  rollout からのタイトル抽出（先頭プロンプト以上のもの）を検討
+- **初回タブ CLI の設定化 / 記憶**: 現状は常に claude（インタビューで決定）。codex 主体ユーザー向けに
+  既定 CLI の設定 or 前回選択の記憶を検討
+- **`codex fork` / `archive` の UI 対応**: スコープ外とした操作。必要になったら Sessions Drawer に追加
+- **exec モードの MCP auto-cancel（upstream #24135）**: CoRhino は TUI 利用なので現状無関係だが、
+  headless 用途（将来の自動化）を作る場合はこのバグの解消が前提
+
 ## オンボーディング
 
 - **claude CLI 未導入時の導線整理（旧 Phase 2b）**: 現状は `claude` が PATH に無いと
   `bash -l` / `cmd.exe` へ無言フォールバックするだけ。導入を促す UX を決める。
+  （codex は ＋メニューのグレーアウトで「無い」ことが見えるため優先度低）
 - **パネル内の接続ステータス／インジケータ（旧 Phase 2c）**: 「Rhino-MCP 未接続」等を
   パネル内に表示する。現状はネイティブダイアログ＋コマンドラインで代替している。
 

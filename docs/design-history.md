@@ -644,3 +644,100 @@ spawn トレース・env keys・セッションスキャン等の診断ノイズ
   ダイアログで伝わるもの（onboarding 系）や自己修復するもの（セッションスキャン失敗等）はファイルのみ
 - インストーラーの直接 `RhinoApp.WriteLine` も `Log.User` に統一し、コマンドライン出力の経路を一本化
   （ファイルログに漏れなく残る）
+
+## 追加決定 D13–D18: Codex CLI 対応 — タブ単位のエージェント CLI 選択（2026-07-07）
+
+計画・詳細設計は [`plans/codex-cli-support-design.md`](plans/codex-cli-support-design.md)、
+タスク消化と検証注記は [`plans/codex-cli-support-tasks.md`](plans/codex-cli-support-tasks.md)。
+ここには判断の要点と検証・レビューの経緯だけを残す。
+
+### 意図
+
+エージェント本体（CLI）は交換可能な部品であるべきで、claude 固有の配線がオーケストレータに
+直書きされている状態は D2（責務境界）の精神に反する。タブ単位で Claude Code / Codex を選べるようにし、
+その過程で CLI 差分を層として分離する。仕様はインタビューで確定: タブごとに選択（混在可）、
+初回タブは常に claude、＋クリックのミニメニュー、段階的フル対応。
+
+### D13: CLI アダプタ層 `IAgentCli`
+
+- 起動引数（MCP 隔離・レイヤ指示注入）・セッション同定・スキル capability を CLI ごとの
+  アダプタ（`src/Cli/`）に閉じ込め、`CoRhinoPanel` は CLI 非依存の PTY 配線だけを持つ。
+  claude 経路も同時に移設（pre-alpha 方針: 互換シムを作らない）
+- Phase 1 は「claude の挙動が 1 ミリも変わらない」を完了条件とするリファクタとして先行。
+  レビュー指摘で `CliResolver` の結果キャッシュ案を撤回（キャッシュは「起動中に CLI を
+  インストールしたら次の spawn で拾える」現行挙動を壊す）— 解決は毎 spawn、＋メニューの
+  availability はパネル ready 時の BG プローブ 1 回
+
+### D14: codex の隔離は `-c` 合成（`~/.codex` 無変更）
+
+- スパイク（自作 streamable-HTTP MCP サーバ + `codex exec`、0.142.5）で確定した事実:
+  `-c 'mcp_servers={...}'` は**全置換ではなくマージ**、`--ignore-user-config` は exec 専用、
+  `http_headers` は全リクエストに到達、`default_tools_approval_mode="auto"` で TUI は承認プロンプトなし
+  （exec は upstream バグ #24135 で常に auto-cancel — TUI 利用の CoRhino には無関係）、
+  `-c developer_instructions` が `--append-system-prompt` の等価物（追記・不可視・実測）
+- 合成レシピ: `--disable plugins`（プラグイン注入サーバを一括排除）+ config.toml の実在
+  `[mcp_servers.*]` を個別 `enabled=false` + rhino 追加 + `projects.<workspace>.trust_level`
+  注入（初回 trust プロンプト抑止・永続化させない）
+- config.toml の名前抽出は軽量パース。**不確実な名前は disable しない方向に倒す**
+  （存在しない名前への enabled=false は起動を殺す — レビュー指摘で literal quoted key 対応・
+  エスケープ不明時 skip+log・inline table 検出ログを追加）
+- **承認ポリシー（同日追記・実機フィードバック起点）**: 当初は codex 既定（on-request）に任せたが、
+  シェルコマンドごとの承認が実運用で煩雑 → `-a never -s workspace-write` を既定に。プロンプトなしで
+  実行しつつサンドボックスは維持（書き込みは workspace+tmp、失敗はモデルに返る）。`--full-auto` は
+  0.142.5 に存在せず `on-failure` も deprecated のため、この組が現行の「サンドボックス付き自動」。
+  `--dangerously-*` は使わない
+
+### D15: codex セッション ID の事後発見と帰属保証
+
+- codex は `--session-id` 相当を持たない → spawn 後に `~/.codex/sessions/` の新規 rollout
+  （1 行目 `session_meta.cwd` == 共有 workspace、mtime ≥ spawn−5s）を突合して ID を確定。
+  rollout は起動数秒内に生成される（実測）ため 500ms × 15s ポーリングで足りる
+- **レビュー 3 ラウンドで設計が強化された箇所**（当初の claimed 集合だけでは不十分だった）:
+  1. 全 codex タブが同一 cwd を共有するため候補 rollout の帰属を証明できない →
+     process-wide の `CodexSpawnGate` で [起動 → claim] を直列化（未 claim の一致 rollout は常に高々 1 つ）
+  2. タブ除去時に discovery を単純中断すると自 rollout が未 claim で残り次タブが誤 claim →
+     cancel は **burn mode**（ゲート保持中に claim して捨てる。deadline は +4s 短縮）
+  3. ID 未確定の実行中セッションが Sessions Drawer で非 live に見え二重 resume / live delete が可能 →
+     `PendingCodexTabs` + 単一判定 `IsSessionBlocked`（live ∪ deleting ∪ pending-cutoff）を
+     装飾と resume/delete ガードで共用。`codex delete` は実行中予約（`DeletingSessionIds`）
+- Sessions Drawer は両カタログ（`SessionsCatalog` + `CodexSessionsCatalog`）のマージ 1 タイムライン。
+  codex のタイトルは `session_index.jsonl` の `thread_name`（exec セッションが載らない遅延あり →
+  ベストエフォート）> 先頭 `user_message`。削除は `codex delete --force <id>`
+  （`--force` 必須: 非対話端末では確認プロンプトを出せず exit 1 — 実機で発覚し修正）
+
+### D16: codex のレイヤは C# 採番 + 永続マッピング
+
+- レイヤの決定的導出（D11: `s-<id先頭8桁>`）は spawn 時に ID が無い codex では不可能 →
+  C# が `s-<8hex>` を採番して `-c developer_instructions` で注入し、ID 確定後に
+  `session-layers.json` へ永続化。resume は復元（マッピング欠落時は採番し直して保存）
+
+### D17: AGENTS.md を同一テンプレから seed
+
+- codex は CLAUDE.md を読まない。並列エージェントルールは CLI 非依存なのでテンプレを
+  `WorkspaceGuideTemplate` に共通化し、`EnsureWorkspace` が両ファイルを「無ければ seed」
+  （以後ユーザー所有・symlink ではなく別ファイル = CLI ごとに育て分ける余地を残す）
+
+### D18: codex のスキルは workspace symlink mount（2026-07-07・実機フィードバック起点）
+
+- 当初「codex に `--plugin-dir` 相当なし」として Skills Drawer を codex で無効化していたが、
+  サブエージェント調査（ローカル実機 + 公式ソース rust-v0.142.5）で codex のプロジェクトスキル
+  発見規約が判明: `<cwd>/.agents/skills` と `<cwd>/.codex/skills` の両ルートを読む（symlink 可・
+  trust 不要・`--disable plugins` と干渉なし・SKILL.md は claude 形式互換・
+  symlink 先の `.claude-plugin/plugin.json` も認識し plugin 名前空間付きでロード）
+- workspace に symlink 2 本（`.agents/skills` → ユーザーストア、`.codex/skills` → 同梱 cc-plugin）で
+  **claude と同一のスキル実体を共有**。`~/.codex` は無傷
+- 制約と対応: in-session reload なし（`SupportsSkillsReload=false` — codex タブでは ⟳ 非表示、
+  ⚠ は「新しいタブから有効」）。ドロワーは mount 経由 CLI ではソースごとにリンク健全性
+  （LinkTarget 照合）を検証してから列挙（レビュー指摘: リンク不成立時に「セッションに無いものを
+  見せない」ため）。ユーザーのグローバルスキル（`~/.codex/skills` / `~/.agents/skills`）の混入は
+  CLI から抑止できない既知の制約
+- 「save-rhino-skill がない」の初報は誤検知も含んでいた: codex の全列挙応答が plugin 名前空間付き
+  スキル（`corhino:save-rhino-skill`）を省略しており、ロード自体は成功していた
+
+### 検証・レビュー体制（このフェーズ群で確立したこと）
+
+- 各 Phase 末尾に Codex レビューゲート（LGTM まで反復）。計 5 フェーズで High 指摘 4 件・
+  Medium 3 件を実装前に検出・修正（resolver キャッシュ、帰属レース×2、TOML パース穴、
+  live ガード×2、delete 中 resume レース）
+- codex 側の挙動は「公式 docs / ソース」と「ローカル実機」の両面で裏取りしてから設計に反映
+  （例: `.codex/skills` ルートは docs の trust 条件記述と実測が食い違い、実測を採った）

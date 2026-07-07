@@ -47,7 +47,7 @@ localhost:10590 に立て、`codex exec`（codex-cli 0.142.5）で各構成を�
     CoRhino は TUI 利用なので影響なしだが、**tools/call の E2E は Phase 2 の Rhino 実機スモークが最終ゲート**（2-9 に明記）
 
 ### 📋 Phase 0 完了処理
-- [x] **0-6**: 検証結果を設計書 2 章 / 3 章 D13 / 4.3 / 5.3 / 5.5 / 6 章に反映済み。ユーザー報告済み
+- [x] **0-6**: 検証結果を設計書 2 章 / 3 章 D14 / 4.3 / 5.3 / 5.5 / 6 章に反映済み。ユーザー報告済み
 
 ---
 
@@ -79,9 +79,9 @@ localhost:10590 に立て、`codex exec`（codex-cli 0.142.5）で各構成を�
 
 ## Phase 2: codex タブの起動（spawn + MCP + レイヤ + ID 発見）✅ コード完了（2026-07-07・実機スモークのみ残）
 
-- [x] **2-1**: `Workspace.EnsureWorkspace()` に AGENTS.md seed を追加（D16）
+- [x] **2-1**: `Workspace.EnsureWorkspace()` に AGENTS.md seed を追加（D17）
   - テンプレを `WorkspaceGuideTemplate` に共通化（文言も CLI 中立に）。既存 workspace には AGENTS.md のみ後追い seed
-- [x] **2-2**: `src/Panel/SessionLayers.cs` を作成（D15）
+- [x] **2-2**: `src/Panel/SessionLayers.cs` を作成（D16）
   - `~/.corhino/session-layers.json`、`SessionNames` と同型（lock + write-through、temp+move、剪定なし）
 - [x] **2-3**: `src/Cli/CodexCli.cs` — `BuildArgs`（Phase 0 確定レシピ）
   - 実装どおり + 追加: `-c projects."<workspace>".trust_level="trusted"`（初回 trust プロンプト抑止・config.toml へ書かせない）
@@ -89,7 +89,7 @@ localhost:10590 に立て、`codex exec`（codex-cli 0.142.5）で各構成を�
     inline `mcp_servers = {...}` は検出して警告ログ（そのサーバは共存）。**不確実な名前は disable しない方向に倒す**
     （存在しない名前への enabled=false は起動を殺すため — R1 レビュー指摘の反映）
   - 生成引数列は実 codex 0.142.5 で `codex mcp list` 検証済み（rhino のみ enabled・trust/instructions 受理）
-- [x] **2-4**: `CodexCli.DiscoverSessionIdAsync`（D14）
+- [x] **2-4**: `CodexCli.DiscoverSessionIdAsync`（D15）
   - rollout 列挙（spawn 日 ±1 日）→ mtime フィルタ → 1 行目 `session_meta.cwd` 突合 → UUID 確定。500ms × 上限 15s
   - **設計強化（R2/R3 レビュー反映）**: claimed 集合だけでは帰属を証明できない（全タブ同一 cwd）→
     (a) process-wide `CodexSpawnGate`（SemaphoreSlim）で [起動 → claim] を直列化、
@@ -155,9 +155,9 @@ localhost:10590 に立て、`codex exec`（codex-cli 0.142.5）で各構成を�
 ## Phase 3b: codex スキル対応（調査により追加。2026-07-07 実装）✅ コード完了（実機スモークのみ残）
 
 前提調査（サブエージェント 2 系統: ローカル実機 0.142.5 / 公式 docs + ソース rust-v0.142.5）:
-`<cwd>/.agents/skills/*/SKILL.md` の配置規約でセッション（ディレクトリ）限定注入が可能、symlink 経由
-ロード実測 OK、SKILL.md は claude 互換、`--disable plugins` と干渉なし、in-session reload なし、
-bundled cc-plugin の mount 手段なし（詳細は設計書 5.8）。
+`<cwd>/.agents/skills/` と `<cwd>/.codex/skills/` の配置規約でセッション（ディレクトリ）限定注入が可能、
+symlink 経由ロード実測 OK、SKILL.md は claude 互換、`--disable plugins` と干渉なし、in-session reload のみ
+なし（詳細は設計書 5.8。当初「bundled は mount 不可」としたが `.codex/skills` ルートで解決 → 3b-7）。
 
 - [x] **3b-1**: `Workspace.EnsureCodexSkillsLink` — `<workspace>/.agents/skills` → `~/.corhino/skills/skills`
   の symlink を無ければ seed（既存エントリはユーザー所有として不触。失敗は一度だけログ・claude 無影響）
@@ -193,8 +193,8 @@ bundled cc-plugin の mount 手段なし（詳細は設計書 5.8）。
 
 ## Phase 4: ドキュメント追従 + 実機確認チェックリスト
 
-- [ ] **4-1**: `docs/architecture.md` 更新（`Cli/` 章、プロトコル表、D12–D16 参照）
-- [ ] **4-2**: `docs/design-history.md` に D12–D16 を記録（Phase 0 の検証ログ含む）
+- [ ] **4-1**: `docs/architecture.md` 更新（`Cli/` 章、プロトコル表、D14–D17 参照）
+- [ ] **4-2**: `docs/design-history.md` に D14–D17 を記録（Phase 0 の検証ログ含む）
 - [ ] **4-3**: `README.md` 更新（codex 要件・使い方）
 - [ ] **4-4**: `docs/roadmap.md` 更新（codex Skills Drawer / codex ID 回転追跡 / Windows 検証ゲート / 初回タブ CLI 設定化）
 - [ ] **4-5**: 総合実機確認
@@ -205,8 +205,15 @@ bundled cc-plugin の mount 手段なし（詳細は設計書 5.8）。
   - [ ] codex 未導入マシン相当（PATH から外して）でメニューがグレーアウト、claude は通常動作
   - [ ] `/exit`（claude）・`Ctrl-D`（codex）での終了 → タブ撤去 → 最後のタブでパネルクローズ
 
+- [x] **4-7（追加・実機フィードバック起点）**: codex タブを承認プロンプトなしで起動
+  - `-a never -s workspace-write` を `CodexCli.BuildArgs` の既定に（`--full-auto` は 0.142.5 に無く
+    `on-failure` は deprecated。`--dangerously-*` は不使用 — サンドボックス維持）。D15 系の
+    design-history 追記・設計書 4.3 改訂済み
+
 ### 📋 Codex レビュー
-- [ ] **4-6**: 最終レビュー（差分全体、ドキュメント整合含む）
+- [x] **4-6**: 最終レビュー実施済み（ドキュメント整合中心。plans/ の stale 記述（スキル「スコープ外」「mount 不可」の残骸）・
+  タスク消化ログの不整合・README の claude 固定表現 / `--force` 欠落・7 章 D5 トレース先の stale を検出 → 全修正。
+  コード側の追加懸念なし）
 
 ---
 

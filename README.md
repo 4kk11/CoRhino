@@ -22,7 +22,7 @@ https://github.com/user-attachments/assets/824f03e8-8070-4911-a21d-9be97cdc1bc3
 Rhino プロセス
 ├── CoRhino プラグイン (.rhp, C#)
 │   ├── "CoRhino" コマンド → サイドパネルを開く
-│   └── パネル = WebView + xterm.js (タブ式) に PTY 経由の claude を表示
+│   └── パネル = WebView + xterm.js (タブ式) に PTY 経由のエージェント CLI を表示
 │        ├─ インスタンス専用ポートを採番 (base 10500)
 │        ├─ RhinoMCP ホストを MCPSpawn でそのポートに起動 (1パネル=1ホスト)
 │        └─ タブごと (= エージェント) に claude / codex を並列起動（＋メニューで選択）
@@ -34,7 +34,7 @@ Rhino プロセス
      └── http://localhost:<port>/ で MCP ホストを提供
 ```
 
-- **direct-HTTP 接続**: claude は `http://localhost:<port>/` の `rhino` MCP サーバに
+- **direct-HTTP 接続**: 各エージェントは `http://localhost:<port>/` の `rhino` MCP サーバに
   直接つながる。node router は使わない（パネルの意味論は「ドックされた“この”Rhino を操作」）。
 - **インスタンス単位のポート**: パネルごとに空きポートを採番するので、複数ドキュメントでも
   各パネルが自分の Rhino を操作する。
@@ -45,7 +45,9 @@ Rhino プロセス
 - **セッション隔離**: claude は `--strict-mcp-config --mcp-config <runtime>/.mcp.json` で起動し、
   ユーザーのグローバル/プロジェクト MCP 設定を読み込まない。`~/.claude` を汚さない。codex は
   `--disable plugins` + 既存 MCP サーバの `enabled=false` + `rhino` サーバ追加を `-c` オーバーライドで
-  spawn 時にのみ注入する。`~/.codex/config.toml`・auth はいずれも無変更（再ログイン不要）。
+  spawn 時にのみ注入する。`~/.codex/config.toml`・auth はいずれも無変更（再ログイン不要）。codex は
+  `-a never -s workspace-write` で起動し、シェルコマンドの承認プロンプトなしに動く
+  （サンドボックスは有効のまま。書き込みは workspace と tmp に限定）。
 - **ユーザー自作スキル**: `~/.corhino/skills/`（初回起動時に骨格を自動生成）を `--plugin-dir` で
   全セッションに読み込む。パネル内の claude に「今の手順をスキルにして」と頼むと、同梱の
   `save-rhino-skill` メタスキルが規約どおり `skills/<name>/SKILL.md` を書き出す（手で置いてもよい。
@@ -64,7 +66,7 @@ Rhino プロセス
   再開後も引き継がれる。不要になったセッションは一覧の 🗑（2度押しで確定）で削除できる。全セッションが共有ワークスペース（`~/.corhino/workspace/`）で動くので、
   Rhino を再起動しても履歴が繋がる。claude / codex 両方のセッションが CLI バッジ付きで 1 つの
   タイムラインに並び、クリックすれば該当 CLI で再開される（codex の削除は索引の整合のため
-  `codex delete` 経由）。
+  `codex delete --force` 経由）。
 - **言語**: パネル UI・ダイアログ・生成されるテンプレート（CLAUDE.md 等）は Rhino の言語設定に
   追従する（日本語 Rhino なら日本語、それ以外は英語）。
 - **MCP ホスト起動**: `RHINO_MCP_AUTOSTART_PORT` をセットして hidden コマンド `_-MCPSpawn`

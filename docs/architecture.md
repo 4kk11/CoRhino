@@ -364,7 +364,7 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
 
 **責務**: CLI ごとの差分（起動引数・MCP 隔離・セッション同定・レイヤ指示注入・機能可否）を
 `IAgentCli` 実装に閉じ込める。PTY 配線・タブ管理・WebView 中継は CLI 非依存なので `CoRhinoPanel` に残る。
-設計は [`plans/codex-cli-support-design.md`](plans/codex-cli-support-design.md)（D12）。
+設計は [`plans/codex-cli-support-design.md`](plans/codex-cli-support-design.md)（D13）。
 
 - `IAgentCli.cs` … アダプタ contract + `SpawnContext` record（spawn 時に UI スレッドで組んでアダプタへ渡す。
   アダプタはパネル状態に触らない）。`BuildArgs` / `LayerTokenFor` / `DiscoverSessionIdAsync` /
@@ -372,13 +372,14 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
 - `ClaudeCli.cs` … 旧 `StartSession` の claude 固有部を移設（`--strict-mcp-config` + `--mcp-config` /
   `--plugin-dir` ×2 / `--session-id`|`--resume` / `--append-system-prompt`。順序も旧実装と同一）。
   レイヤは sessionId から決定的導出（旧 `LayerFor` と同じ `s-<先頭8桁>`）。
-- `CodexCli.cs` … codex アダプタ。隔離は `--disable plugins` + ユーザー config.toml の実在サーバ
+- `CodexCli.cs` … codex アダプタ。承認なしのサンドボックス内自動実行（`-a never -s workspace-write`）。
+  隔離は `--disable plugins` + ユーザー config.toml の実在サーバ
   `enabled=false` + rhino 追加の合成（`-c 'mcp_servers={...}'` はマージであり全置換不可）。レイヤ指示は
   `-c developer_instructions`（追記・TUI 不可視）。スキルは workspace の symlink 2 本
   （`.agents/skills`=ユーザー、`.codex/skills`=同梱）経由（`SupportsSkillsReload=false`: in-session reload 無し /
   `LoadsSkillsViaWorkspaceMount=true`: リンク健全性を検証して列挙）。セッション ID は spawn 後に rollout（1 行目
   `session_meta.cwd` == workspace）を突合して発見 — 帰属は panel の spawn ゲート直列化と burn mode で保証
-  （詳細は [`plans/codex-cli-support-design.md`](plans/codex-cli-support-design.md) 5.2 / D13–D15）。
+  （詳細は [`plans/codex-cli-support-design.md`](plans/codex-cli-support-design.md) 5.2 / D14–D16）。
 - `AgentCliRegistry.cs` … `AgentCliKind` → シングルトン instance。アダプタはステートレスで、
   spawn ごとの状態は `SpawnContext` で運ぶ。
 - 各 `AgentTab` は自分の `Cli`（アダプタ参照）を持ち、`StartSession` は
@@ -731,7 +732,7 @@ RhinoMCP ホストは**ドキュメント単位**。`EndOpenDocument` / `NewDocu
 
 ---
 
-## 7. 確定した設計判断（D1–D11）とトレース
+## 7. 確定した設計判断（D1–D18）とトレース
 
 各判断が**どのコードに現れるか**まで対応づける（判断の詳細な理由・経緯は [`design-history.md`](design-history.md)）。
 
@@ -741,13 +742,20 @@ RhinoMCP ホストは**ドキュメント単位**。`EndOpenDocument` / `NewDocu
 | **D2** | ツールを持たない・vendoring しない | 公式が育てるものに乗る。フォーク保守を発生させない | リポジトリにツール実装が存在しない（責務境界） |
 | **D3** | 設定はセッション単位で注入、`~/.claude` を汚さない | Rhino から開いた claude のときだけ rhino ツールが付くのが自然 | `--strict-mcp-config --mcp-config`（CoRhinoPanel.cs:202） |
 | **D4** | ホスト MCP はパネルが自動起動 | ユーザーにコマンドを打たせない | `EnsureHostMcpStarted`（_-MCPSpawn + env var） |
-| **D5** | claude の cwd は固定（アクティブ `.3dm` に追従しない） | 設定を一元化し挙動を読めるようにする | `Workspace.EnsureSession` が返す sessions dir |
+| **D5** | エージェントの cwd は固定（アクティブ `.3dm` に追従しない） | 設定を一元化し挙動を読めるようにする | `Workspace.EnsureWorkspace` が返す共有 workspace（D11 で共有化） |
 | **D6** | ホスト MCP ポートを per-instance 化（D5 の固定を改訂。cwd の per-instance 化は D11 で共有に再改訂） | 複数 Rhino での混線を防ぐ | `ResolveFreePort` / `_hostPort` |
 | **D7** | 1 doc に複数 claude（タブ並列）。同一ポート共有＋レイヤ・ソフト分離＋ `X-CoRhino-Agent` ヘッダ（レイヤの割当単位は D11 でセッション紐付けに改訂） | ホストはステートレス多重接続可。並列独立作業を最小改修で。論理衝突はレイヤで回避、強制は将来 | `_tabs` / `IAgentCli.LayerTokenFor` / `.mcp.json` headers / CLAUDE.md のレイヤ節 |
 | **D8** | ユーザー自作スキルは `~/.corhino/skills` の local plugin として全セッションへ注入。保存を担う `save-rhino-skill` メタスキルは同梱 cc-plugin で配布 | ユーザーが会話から動的にスキルを蓄積できる。`~/.claude/skills` に混ぜない（D3 と同じ隔離姿勢）。Rhino ノウハウは持たないが、CoRhino 自身の規約を教えるオンボーディングスキルは持つ（D2 の精緻化 → 1.2） | `Workspace.EnsureUserSkillsPlugin` / `cc-plugin/` / `--plugin-dir` ×2（CoRhinoPanel.cs） |
 | **D9** | スキル一覧はパネル右のドロワー（⚡）。ロード状態は mtime vs per-tab タイムスタンプの近似 | claude 内部のロード状態は外から読めない。誤検知は ⟳ で収束する方向にのみ倒す | `SkillsCatalog.cs` / `skills-drawer.ts` / watcher（CoRhinoPanel.cs） |
 | **D10** | セッション管理: spawn 時に `--session-id` で ID を固定し、Sessions Drawer（🕘）から `--resume` で再開。命名は `session-names.json`（sessionId キー） | claude の履歴は cwd キーで `--resume` は同 cwd 限定——ポート入り cwd（D6）がドリフトで履歴を分断していた。ID 固定でタブ⇄トランスクリプト対応をパース無しで把握 | `--session-id`/`--resume`（StartSession）/ `SessionsCatalog.cs` / `SessionNames.cs` / `sessions-drawer.ts` |
 | **D11** | cwd を全セッション共有の `~/.corhino/workspace/` に一本化（D10 のスロット dir 方式と D6/D7 の dir 分離を即日改訂）。`.mcp.json` は `runtime/` へ、担当レイヤはセッション紐付け（`s-<id先頭8桁>`）を `--append-system-prompt` で注入 | スロット方式は「スロット使用中」等の占有概念とプロセス内外の衝突対策を生んだ。分離の実体は cwd ではなくセッション ID と `.mcp.json` の中身なので、cwd を1つにすれば resume は常時可能になり占有概念ごと消せる | `Workspace.EnsureWorkspace`/`EnsureAgentMcpConfig` / `IAgentCli.LayerTokenFor`/`LiveSessionIds` |
+| **D12** | ログ2レベル化: `Log.Write`=ファイル専用、`Log.User`=コマンドライン+ファイル | 診断ノイズが Rhino コマンドラインを埋めていた。基準は「ユーザーがコマンドラインで見る必要があるか」 | `Log.cs` |
+| **D13** | CLI アダプタ層 `IAgentCli`: 起動引数・セッション同定・レイヤ戦略・スキル capability を CLI ごとのアダプタに閉じ込める | タブ単位で claude / codex を選択可能に。3 つ目の CLI 追加でオーケストレータを触らない | `src/Cli/*` / `AgentTab.Cli` / `StartSession`（CLI 非依存の PTY 配線のみ） |
+| **D14** | codex の隔離は「`--disable plugins` + 既存サーバ個別 `enabled=false` + rhino 追加」の `-c` 合成。`~/.codex` は無変更 | codex に `--strict-mcp-config` 相当なし、`-c mcp_servers={...}` はマージ挙動（実測）。`CODEX_HOME` 分離は auth まで分離され再ログインが必要 | `CodexCli.BuildArgs` / `ReadUserMcpServerNames` |
+| **D15** | codex のセッション ID は spawn 後に rollout 突合で発見。帰属は spawn ゲート直列化 + burn mode で保証、未確定セッションは `IsSessionBlocked` でブロック | codex は ID 固定不可。全タブが同一 cwd を共有するため「新しい rollout + cwd 一致」だけでは帰属を証明できない | `CodexCli.DiscoverSessionIdAsync` / `CodexSpawnGate` / `PendingCodexTabs` / `DeletingSessionIds` / `IsSessionBlocked` |
+| **D16** | codex のレイヤは C# 採番トークン + `session-layers.json` 永続マッピング | spawn 時に ID が無いので決定的導出（D11 方式）が使えない。resume で同一レイヤを復元するには永続化が必要 | `SessionLayers.cs` / `CodexCli.LayerTokenFor` |
+| **D17** | `AGENTS.md` を `CLAUDE.md` と同一テンプレから seed | 並列エージェントルールは CLI 非依存。codex は AGENTS.md を読む | `Workspace.EnsureWorkspace` / `WorkspaceGuideTemplate` |
+| **D18** | codex のスキルは workspace symlink mount（`.agents/skills`=ユーザー、`.codex/skills`=同梱）。ドロワーはリンク健全性を検証して列挙 | codex に `--plugin-dir` 相当なし。プロジェクトスキル発見規約（両ルート・symlink 可）を実測確認。claude と同一のスキル実体を共有 | `Workspace.EnsureCodexSkillsLinks`/`Codex*SkillsLinkActive` / `IAgentCli.LoadsSkillsViaWorkspaceMount` |
 
 **MCP ホスト起動の落とし穴（バグ B3）**: `_-MCPStart <port>` は `GetInteger` で対話的にポートを取るため、
 runscript からポートを渡せず「不明なコマンド: <port>」が漏れてホストが上がらなかった。RhinoMCP 側はこの racy な
