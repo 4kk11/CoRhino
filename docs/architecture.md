@@ -175,7 +175,7 @@ Rhino がドキュメントごとに `new CoRhinoPanel(uint documentSerialNumber
 
 | メソッド | 役割 | 参照 |
 |---|---|---|
-| `SpawnTab` | 次の agentId を採番 → 新規セッション ID 採番 → `AgentTab` 登録 → UI へ `onTabCreated` → 背景で CLI 起動 | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
+| `SpawnTab(kind)` | 次の agentId を採番 → セッション ID（claude=採番 / codex=null、発見待ち）→ `AgentTab` 登録 → UI へ `onTabCreated` → 背景で CLI 起動 | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `ResumeSession` | Sessions Drawer からの再開。allowlist（`SessionsCatalog.TryGetKnown`）＋ jsonl 存在＋非実行中（`LiveSessionIds`）を検証し、`Resume=true` の新規タブとして spawn | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `RenameSession` | 名前を `session-names.json` に永続化（空で削除）→ live タブなら `onTabLabel` → 一覧再送 | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `DeleteSession` | トランスクリプト（jsonl + `<id>/` subagents dir）と名前を削除。allowlist＋非実行中のみ | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
@@ -183,7 +183,7 @@ Rhino がドキュメントごとに `new CoRhinoPanel(uint documentSerialNumber
 | `StartSession(tab)` | CLI 解決 → そのエージェントの session dir 準備 → claude を PTY で spawn（後述） | [:207](../src/Panel/CoRhinoPanel.cs#L207) |
 | `EnsureHostMcpStarted` | `RhinoApp.Idle` ワンショットで env var セット + `_-MCPSpawn` 発火（全タブ共有・1回） | [:266](../src/Panel/CoRhinoPanel.cs#L266) |
 | `OnDocChangedRestartHost` | doc 切替/新規時、導入済みならホスト再起動 | [:303](../src/Panel/CoRhinoPanel.cs#L303) |
-| `OnMessageReceived` | WebView → C# の JSON を捌く（ready/createTab/closeTab/stdin/resize/listSkills/openSkill/reloadSkills/listSessions/resumeSession/renameSession/deleteSession/debug、agentId で振り分け） | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
+| `OnMessageReceived` | WebView → C# の JSON を捌く（ready/createTab{cli}/closeTab/stdin/resize/listSkills/openSkill/reloadSkills/listSessions/resumeSession/renameSession/deleteSession/debug、agentId で振り分け） | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `OnPtyData(tab,…)` | PTY 出力を UTF-8 化し該当タブへ（未 ready ならそのタブの `Pending` にキュー）。id 再利用に備え `ReferenceEquals` で stale を破棄 | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `OnSessionExited(tab,…)` | claude 終了 → `RemoveTab(tab)` を UI スレッドで呼ぶ | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `RemoveTab(tab)` | **タブ撤去の単一経路**（exit / ×ボタン / 起動失敗 共通）。id→別インスタンスなら no-op。Session Dispose + `onTabClosed` + 空なら `ClosePanel` | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
@@ -278,7 +278,7 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
 - `ResolveFreePort(count=100)`: `BasePort=10500` から順に `TcpListener` で bind 試行し、最初に空いたポートを返す。
   100 個全滅なら 10500 を返す（その場合は後段の bind エラーで顕在化）。**ポートはパネル単位**（1パネル内の
   全エージェントは同じポートを共有する）。
-- `EnsureWorkspace()`: 共有 dir を作成し、`CLAUDE.md` を**存在しなければ**テンプレから seed（以後ユーザー
+- `EnsureWorkspace()`: 共有 dir を作成し、`CLAUDE.md` と `AGENTS.md`（codex 用・同一テンプレ）を**存在しなければ** seed（以後ユーザー
   所有、上書きしない）。テンプレは並列エージェントのルールを持つが、担当レイヤの**値**は持たない——
   それはセッション固有なので `--append-system-prompt` が届ける（→ 2.3 / D11）。戻り値 = claude の cwd。
   テンプレ（CLAUDE.md・skills README/manifest も同様）は **seed 時点の Rhino 言語**（`L10n`）で書かれ、
@@ -362,7 +362,12 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
 - `ClaudeCli.cs` … 旧 `StartSession` の claude 固有部を移設（`--strict-mcp-config` + `--mcp-config` /
   `--plugin-dir` ×2 / `--session-id`|`--resume` / `--append-system-prompt`。順序も旧実装と同一）。
   レイヤは sessionId から決定的導出（旧 `LayerFor` と同じ `s-<先頭8桁>`）。
-- `AgentCliRegistry.cs` … Kind → シングルトン instance（現状 Claude のみ登録）。アダプタはステートレスで、
+- `CodexCli.cs` … codex アダプタ。隔離は `--disable plugins` + ユーザー config.toml の実在サーバ
+  `enabled=false` + rhino 追加の合成（`-c 'mcp_servers={...}'` はマージであり全置換不可）。レイヤ指示は
+  `-c developer_instructions`（追記・TUI 不可視）。セッション ID は spawn 後に rollout（1 行目
+  `session_meta.cwd` == workspace）を突合して発見 — 帰属は panel の spawn ゲート直列化と burn mode で保証
+  （詳細は [`plans/codex-cli-support-design.md`](plans/codex-cli-support-design.md) 5.2 / D13–D15）。
+- `AgentCliRegistry.cs` … `AgentCliKind` → シングルトン instance。アダプタはステートレスで、
   spawn ごとの状態は `SpawnContext` で運ぶ。
 - 各 `AgentTab` は自分の `Cli`（アダプタ参照）を持ち、`StartSession` は
   「解決（`CliResolver.Resolve(cli.BinaryName)`）→ `SpawnContext` 構築 → `cli.BuildArgs(ctx)` → PTY spawn」
@@ -393,7 +398,7 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
   - `addTab(payload)` … pane + xterm を生成し、開いてアクティブ化。`onData`/`onResize` を **agentId 付き**で post。
   - `activateTab` … 他を隠し対象を表示 → `fit()` → focus。
   - `removeTab` … dispose + DOM 除去、隣のタブをアクティブ化。
-  - 「＋」→ `createTab` を post（採番は C# 側）。各タブの「×」→ `closeTab` を post。
+  - 「＋」→ CLI 選択ミニメニュー（Claude Code / Codex。未導入はグレーアウト）→ `createTab{cli}` を post（採番は C# 側）。各タブの「×」→ `closeTab` を post。codex タブがアクティブな間 ⚡ は disabled。
   - **タブラベル**: 初期値は `onTabCreated` の `label`（手動名 > 自動タイトル > agentId を C# が計算）。
     ラベルの**ダブルクリック**でインライン `<input>` に切替（Enter=確定 / Esc=取消 / blur=確定、空で自動
     タイトルに戻す）→ `renameSession` を post。反映は C# の `onTabLabel` push を待つ（楽観描画しない）。
@@ -402,12 +407,14 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
   `window.CORHINO_LANG` を注入し、シェルは boot 時に同期的に正しい言語で DOM を組む（dev サーバ経路は
   注入点が無いのでブラウザロケールにフォールバック）。Rhino の言語変更は再起動必須なのでプロセス中は固定。
 - **ブリッジ** `post()`: 環境ごとに送信口が違う（macOS=`window.eto`、Windows=`window.chrome.webview`、レガシー=`window.external.notify`）。
-- **送信メッセージ（Outbound）**: `ready` / `createTab` / `closeTab{agentId}` / `stdin{agentId,data}` /
+- **送信メッセージ（Outbound）**: `ready` / `createTab{cli?}` / `closeTab{agentId}` / `stdin{agentId,data}` /
   `resize{agentId,cols,rows}` / `listSkills{agentId}` / `openSkill{path}` / `reloadSkills{agentId}` /
   `listSessions` / `resumeSession{sessionId}` / `renameSession{sessionId,name}` /
   `deleteSession{sessionId}` / `debug`。
 - **受信窓口** `window.CoRhinoPanel`: C# 側が `ExecuteScriptAsync` で呼ぶ。
-  - `onTabCreated({agentId, sessionId, label, customName})` → タブ＋xterm を生成しアクティブ化
+  - `onTabCreated({agentId, sessionId, label, customName, cli})` → タブ＋xterm を生成しアクティブ化（cli バッジ付き）
+  - `onTabSession({agentId, sessionId})` → codex タブの ID 確定を反映
+  - `onCliAvailability({claude, codex})` → ＋メニューの項目状態を更新
   - `onPtyData(agentId, text)` → 該当タブの `term.write(text)`
   - `onSessionRestart(agentId)` → 該当タブの `term.reset()`
   - `onTabClosed(agentId)` → そのタブを除去
@@ -484,8 +491,8 @@ CoRhino は内部に4つの通信境界を持つ。バグはたいていこの�
 
 | `type` | ペイロード | C# の処理 |
 |---|---|---|
-| `ready` | — | `_webReady=true` → 各タブを `onTabCreated` で announce → `FlushPending` |
-| `createTab` | — | `SpawnTab()`（次の agentId を採番し起動） |
+| `ready` | — | `_webReady=true` → 各タブを `onTabCreated` で announce → `FlushPending` → `PushCliAvailability`（BG プローブ → `onCliAvailability`） |
+| `createTab` | `cli?`（"claude"/"codex"、省略時 claude） | `SpawnTab(kind)`（次の agentId を採番し該当 CLI を起動） |
 | `closeTab` | `agentId` | `CloseTab(agentId)`（その PtySession を Dispose） |
 | `stdin` | `agentId, data` | UTF-8 で該当タブの `Session.Write()`（PTY へ） |
 | `resize` | `agentId, cols, rows` | 該当タブの `Session.Resize(cols, rows)` |
@@ -502,7 +509,9 @@ CoRhino は内部に4つの通信境界を持つ。バグはたいていこの�
 
 | 呼び出し | UI の処理 |
 |---|---|
-| `onTabCreated({agentId, sessionId, label, customName})` | タブ＋xterm を生成しアクティブ化。label は初期タブ名（手動名 > 自動タイトル > agentId） |
+| `onTabCreated({agentId, sessionId, label, customName, cli})` | タブ＋xterm を生成しアクティブ化。label は初期タブ名（手動名 > 自動タイトル > agentId）。cli はタブバッジ（● claude / ◆ codex） |
+| `onTabSession({agentId, sessionId})` | codex タブの ID が発見された（rename が可能になる） |
+| `onCliAvailability({claude, codex})` | ＋メニューの CLI 項目の有効/グレーアウト |
 | `onPtyData(agentId, text)` | 該当タブの `term.write(text)` |
 | `onSessionRestart(agentId)` | 該当タブの `term.reset()`（再起動時に画面クリア） |
 | `onTabClosed(agentId)` | そのタブを除去 |

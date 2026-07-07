@@ -27,6 +27,8 @@ export type SkillsDrawer = {
   notifyActiveTabChanged: () => void
   /** Close if open (drawer exclusivity). Fires onToggled like a user close. */
   close: () => void
+  /** false while the active tab's CLI has no skills (codex): closes + greys ⚡. */
+  setEnabled: (enabled: boolean) => void
 }
 
 export function createSkillsDrawer(opts: {
@@ -71,8 +73,13 @@ export function createSkillsDrawer(opts: {
   button.addEventListener('click', () => toggle())
 
   let open = false
+  // Disabled while the active tab's CLI has no skill loading (codex). The
+  // button stays visible — "not available for this CLI" reads better than a
+  // vanishing control — but ignores clicks; enabling restores it untouched.
+  let enabled = true
 
   function toggle() {
+    if (!enabled) return
     open = !open
     root.classList.toggle('hidden', !open)
     button.classList.toggle('active', open)
@@ -81,6 +88,14 @@ export function createSkillsDrawer(opts: {
       if (id) opts.requestList(id)
     }
     opts.onToggled(open)
+  }
+
+  function setEnabled(value: boolean) {
+    if (enabled === value) return
+    if (!value && open) toggle() // close while still enabled
+    enabled = value
+    button.classList.toggle('disabled', !value)
+    button.title = value ? L.skillsBtn : L.skillsUnsupported
   }
 
   function close() {
@@ -159,7 +174,7 @@ export function createSkillsDrawer(opts: {
     return row
   }
 
-  return { root, button, handleSkillsList, notifyActiveTabChanged, close }
+  return { root, button, handleSkillsList, notifyActiveTabChanged, close, setEnabled }
 }
 
 function injectStyles() {
@@ -172,6 +187,8 @@ function injectStyles() {
   }
   #skillsbtn:hover { background: #222; color: #fff; }
   #skillsbtn.active { background: #111; color: #ffd75f; }
+  #skillsbtn.disabled { opacity: 0.35; cursor: default; }
+  #skillsbtn.disabled:hover { background: transparent; color: #aaa; }
   #skillsdrawer {
     flex: 0 0 260px; display: flex; flex-direction: column; overflow: hidden;
     background: #1a1a1a; border-left: 1px solid #2a2a2a;

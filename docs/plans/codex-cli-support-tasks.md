@@ -76,40 +76,47 @@ localhost:10590 に立て、`codex exec`（codex-cli 0.142.5）で各構成を�
   - 申し送り: `CliResolver` の binaryName はシェル埋め込みのためアダプタ定数以外を渡さない（architecture.md 2.7 に明記）
 
 ---
-## Phase 2: codex タブの起動（spawn + MCP + レイヤ + ID 発見）
 
-- [ ] **2-1**: `Workspace.EnsureWorkspace()` に AGENTS.md seed を追加（D16）
-  - テンプレ本文を CLAUDE.md と共通化（定数を 1 か所に）。既存 workspace には AGENTS.md のみ後追い seed
-- [ ] **2-2**: `src/Panel/SessionLayers.cs` を作成（D15）
-  - `~/.corhino/session-layers.json`、`SessionNames` と同型（lock + write-through、剪定なし）
-- [ ] **2-3**: `src/Cli/CodexCli.cs` — `BuildArgs`（Phase 0 確定レシピ）
-  - `--disable plugins` + 既存サーバの `-c mcp_servers.<name>.enabled=false` 群 + rhino 追加（`http_headers` + `default_tools_approval_mode="auto"`）
-  - `~/.codex/config.toml` の `[mcp_servers.<name>]` テーブルヘッダの軽量パーサ（読み取りのみ・UI 非依存の static・パース失敗時は disable 群なしで spawn + `Log.Write`）
-  - レイヤ指示は `-c developer_instructions="..."`（L10n 経由）。TOML inline table / 文字列のエスケープは純粋関数に分離
-  - 新規: レイヤトークン採番（`s-<8hex>`）/ resume: `codex resume <id>` + `SessionLayers` 復元（`-c` 群は resume でも毎回付ける）
-- [ ] **2-4**: `CodexCli.DiscoverSessionIdAsync`（D14）
-  - rollout 列挙（spawn 日 + 翌日 UTC）→ ファイル名 timestamp フィルタ → 1 行目 `session_meta.cwd` 突合 → UUID 確定
-  - 500ms × 上限 15s リトライ、claimed 集合による並列 spawn 競合回避、失敗時 null + `Log.Write`
-  - rollout 1 行目パーサは UI 非依存の static メソッドに分離
-- [ ] **2-5**: `CoRhinoPanel` の spawn 経路統合
-  - `SpawnTab(kind)` 化。codex タブは `SessionId=null` で開始、`DiscoverSessionIdAsync` 完了時に UI スレッドで `SessionId` 確定 + `LiveSessionIds` 登録 + `SessionLayers.Set`
-  - `RemoveTab` / `EnsureSessionAlive` / `ReleaseSessionOnLaunchExit` の SessionId null 経路がタブ Kind に関わらず安全なことを確認
-- [ ] **2-6**: UI — ＋ミニメニューとバッジ
-  - `main.ts`: ＋クリックでメニュー（外側クリック / Esc で閉じる、ドロワーと排他）、`createTab {cli}` 送信
-  - タブラベルに CLI バッジ（● / ◆）。`onTabCreated` の `cli` フィールド対応
-  - `onCliAvailability` 受信 → 未導入 CLI をグレーアウト + ツールチップ
-- [ ] **2-7**: C# — `createTab {cli}` 受理、`onTabCreated {cli}` / `onCliAvailability` push、codex タブの `listSkills`/`reloadSkills` no-op ガード
-- [ ] **2-8**: UI — codex タブがアクティブな間 ⚡ を disabled 表示
-- [ ] **2-9**: ビルド + tsc + 実機スモーク
+## Phase 2: codex タブの起動（spawn + MCP + レイヤ + ID 発見）✅ コード完了（2026-07-07・実機スモークのみ残）
+
+- [x] **2-1**: `Workspace.EnsureWorkspace()` に AGENTS.md seed を追加（D16）
+  - テンプレを `WorkspaceGuideTemplate` に共通化（文言も CLI 中立に）。既存 workspace には AGENTS.md のみ後追い seed
+- [x] **2-2**: `src/Panel/SessionLayers.cs` を作成（D15）
+  - `~/.corhino/session-layers.json`、`SessionNames` と同型（lock + write-through、temp+move、剪定なし）
+- [x] **2-3**: `src/Cli/CodexCli.cs` — `BuildArgs`（Phase 0 確定レシピ）
+  - 実装どおり + 追加: `-c projects."<workspace>".trust_level="trusted"`（初回 trust プロンプト抑止・config.toml へ書かせない）
+  - config.toml パーサ: bare / basic-quoted（\" と \\ のみ解決、他エスケープは skip+log）/ literal-quoted 対応。
+    inline `mcp_servers = {...}` は検出して警告ログ（そのサーバは共存）。**不確実な名前は disable しない方向に倒す**
+    （存在しない名前への enabled=false は起動を殺すため — R1 レビュー指摘の反映）
+  - 生成引数列は実 codex 0.142.5 で `codex mcp list` 検証済み（rhino のみ enabled・trust/instructions 受理）
+- [x] **2-4**: `CodexCli.DiscoverSessionIdAsync`（D14）
+  - rollout 列挙（spawn 日 ±1 日）→ mtime フィルタ → 1 行目 `session_meta.cwd` 突合 → UUID 確定。500ms × 上限 15s
+  - **設計強化（R2/R3 レビュー反映）**: claimed 集合だけでは帰属を証明できない（全タブ同一 cwd）→
+    (a) process-wide `CodexSpawnGate`（SemaphoreSlim）で [起動 → claim] を直列化、
+    (b) タブ除去時の cancel は **burn mode**（自 rollout を claim して捨てる。deadline は +4s に短縮）
+- [x] **2-5**: `CoRhinoPanel` の spawn 経路統合
+  - `SpawnTab(kind)` 化。codex タブは `SessionId=null` + `DiscoveryCts` 付きで開始。発見時に UI スレッドで
+    `SessionId` 確定 + `LiveSessionIds` 登録 + `SessionLayers.Set` + `onTabSession` push（rename 有効化）
+  - ゲートは StartSession 獲得 → discovery タスクへ引き渡し → finally で必ず解放（spawn 失敗時も）
+- [x] **2-6**: UI — ＋ミニメニューとバッジ（fixed-position メニュー: #tabbar の overflow に食われないため。
+  外側クリック / Esc で閉じる。availability 前の既定は claude=有効・codex=無効）
+- [x] **2-7**: C# — `createTab {cli}` 受理、`onTabCreated {cli}` / `onCliAvailability`（ready 時 BG プローブ 1 回）/
+  `onTabSession` push、codex タブの `listSkills`/`reloadSkills` ガード
+- [x] **2-8**: UI — codex タブがアクティブな間 ⚡ を disabled（`SkillsDrawer.setEnabled`、ツールチップ切替）
+- [ ] **2-9**: ビルド ✅（0 警告 0 エラー、tsc + vite 込み）+ 生成引数の codex 実 CLI 検証 ✅ / **実機スモーク未**
   - codex タブ作成 → Rhino-MCP ツールが `mcp__rhino` 名前空間で見える → `run_python` 等で実操作
     （**tools/call の E2E 最終ゲート**。Phase 0 では exec の upstream バグで TUI 未検証。
     `default_tools_approval_mode="auto"` でプロンプトなしに実行されることをここで確認）
   - レイヤ指示（`developer_instructions`）が効いている（採番レイヤ配下に作図する）
   - claude タブとの並列動作、`~/.codex/config.toml` が無変更であること
+  - タブ増減（codex 連続作成での直列化挙動含む）、codex タブの ×/exit → タブ撤去
 
 ### 📋 Codex レビュー
-- [ ] **2-10**: 対象: `CodexCli.cs`, `SessionLayers.cs`, `Workspace.cs`, `CoRhinoPanel.cs`, `main.ts`
-  - 観点: ID 発見のレース（claimed 集合・UI スレッド変異）、TOML エスケープ、null SessionId 経路、XSS（バッジ/メニューは定数だが規約準拠）
+- [x] **2-10**: 実施済み（3 ラウンド）
+  - R1 High: claimed 集合では帰属を証明できない（同時 spawn で ID 入れ替わり・除去済みタブの誤 claim）→ spawn ゲート直列化 + CTS cancel
+  - R1 Medium: TOML パーサの穴（literal key・エスケープ・inline table）→ skip+log 方向に修正
+  - R2 High: cancel が abort だと自 rollout が未 claim で残り次タブが誤 claim → **burn mode** に変更
+  - R3: 全ポイント解消を確認（XSS・claude 挙動不変・ゲート解放経路とも問題なし）
 
 ---
 

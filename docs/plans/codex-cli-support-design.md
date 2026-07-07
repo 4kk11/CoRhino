@@ -100,29 +100,31 @@ internal interface IAgentCli
     string DisplayName { get; }        // "Claude Code" / "Codex"
     string BinaryName { get; }         // "claude" / "codex"
 
+    // このセッションの担当レイヤ。claude=sessionId から決定的導出（旧 LayerFor）、
+    // codex=SessionLayers の復元 or 新規採番（Phase 2）。null in → null out。
+    string? LayerTokenFor(string? sessionId);
+
     // spawn 引数を組み立てる。sessionId は claude=事前採番 GUID / codex=null。
     // resume 時は sessionId 必須（両 CLI とも既知 ID を渡す）。
-    // layerToken は注入するレイヤ（claude=LayerFor(sessionId), codex=採番 or 復元済みトークン）。
+    // 必要なファイル（claude の .mcp.json 等）はここで準備してよい。
     IReadOnlyList<string> BuildArgs(SpawnContext ctx);
 
     // spawn 後のセッション ID 解決。claude=即時（ctx.SessionId をそのまま返す）、
     // codex=rollout 突合（BG スレッドでポーリング、見つからなければ null のまま）。
     Task<string?> DiscoverSessionIdAsync(SpawnContext ctx, CancellationToken ct);
 
-    // Sessions Drawer 用カタログ（Phase 3）。
-    IReadOnlyList<SessionEntry> ScanSessions();
-    bool DeleteSession(string sessionId);
-
     bool SupportsSkillsDrawer { get; }  // claude=true / codex=false（当面）
 }
 
 internal sealed record SpawnContext(
     string AgentId, int HostPort, string Cwd,
-    string? SessionId, bool Resume, string LayerToken,
+    string? SessionId, bool Resume, string? LayerToken,
     DateTime SpawnedAtUtc);
 ```
 
 **選択理由**: interface のメソッドは「CoRhinoPanel が現に CLI 差分で分岐する箇所」だけに限定する（PTY 入出力・タブ管理・WebView 中継は CLI 非依存なので含めない）。`SpawnContext` を record で渡すのは、引数リストの増殖と「アダプタが Panel の内部状態に触る」結合を防ぐため。
+Sessions Drawer 用のカタログ面（`ScanSessions` / `DeleteSession`）は当初ここに置く案だったが、
+Phase 1-2 の間 dead surface になるため **Phase 3 で拡張**する（実装済み contract が正）。
 
 ### 4.3 各アダプタの引数生成
 
@@ -142,6 +144,7 @@ claude --strict-mcp-config --mcp-config <runtime/mcp-<port>-<agentId>.json>
 codex --disable plugins
       -c 'mcp_servers.<name>.enabled=false'          # ユーザー config.toml の実在エントリごとに繰り返し
       -c 'mcp_servers.rhino={url="http://localhost:<port>/",http_headers={"X-CoRhino-Agent"="<agentId>"},default_tools_approval_mode="auto"}'
+      -c 'projects."<workspace>".trust_level="trusted"'   # 初回 trust プロンプト抑止（config.toml へ書かせない）
       -c 'developer_instructions="<レイヤ指示>"'
 
 # resume（同じ -c 群を毎回付ける。設定はプロセス限りで rollout に残らないため）:
@@ -161,9 +164,13 @@ codex resume <sessionId> --disable plugins -c ... （同上）
 
 ### 5.1 CLI 解決（`CliResolver`）
 
-現行の `Resolve()` は `claude` ハードコード。`Resolve(string binaryName)` に汎用化し、結果を binary 名でキャッシュする（＋メニュー表示のたびに login shell を叩かない）。
+現行の `Resolve()` は `claude` ハードコード。`Resolve(string binaryName)` に汎用化する。
+**キャッシュはしない**（spawn ごとに毎回解決 = 現行挙動維持。キャッシュすると Rhino 起動中にインストールされた
+CLI を拾えなくなる — Phase 1 Codex レビュー指摘で当初案から変更）。＋メニューの availability は
+パネル ready 時に BG スレッドで一度プローブして `onCliAvailability` を push する（メニュー描画は同期・
+プローブ結果は panel が保持。スタート後にインストールされた CLI は次のパネル or 明示リフレッシュで反映）。
 
-- Unix: `bash -lc "command -v <bin> || which <bin>"` （現行と同じ）
+- Unix: `bash -lc "command -v <bin> || which <bin>"` （現行と同じ。binaryName はアダプタ定数のみ渡す）
 - Windows: `where.exe <bin>` + `.cmd` shim 解決（現行と同じ。codex も npm 配布なので shim 対策がそのまま効く）
 - codex が見つからない場合: ＋メニューの Codex 項目をグレーアウト（→ 5.6）。**shell フォールバックはしない**（明示選択制なので、無いものは選ばせないのが正しい）
 
@@ -172,18 +179,24 @@ codex resume <sessionId> --disable plugins -c ... （同上）
 ```
 spawn 直前: SpawnedAtUtc を記録
 spawn 後 BG タスク（DiscoverSessionIdAsync）:
-  1. ~/.codex/sessions/<spawn日 (とその翌日 UTC 跨ぎ)>/ の rollout-*.jsonl を列挙
-  2. ファイル名の timestamp >= SpawnedAtUtc - 5s のものを候補に
+  1. ~/.codex/sessions/<spawn日 ±1 日>/ の rollout-*.jsonl を列挙（local/UTC 日付の曖昧さと日跨ぎに免疫）
+  2. mtime >= SpawnedAtUtc - 5s のものを候補に
   3. 各候補の 1 行目 session_meta を読み cwd == ~/.corhino/workspace を確認
-  4. 一致 → ファイル名から UUID を取得し確定
+  4. 一致 → ファイル名から UUID を取得し claim（claimed 集合へ）→ 確定
   5. 未発見なら 500ms 間隔でリトライ（上限 ~15s。TUI 起動が遅い環境を考慮）
-確定時（UI スレッドへ AsyncInvoke）:
-  - tab.SessionId = id / LiveSessionIds へ登録
-  - SessionLayers.Set(id, layerToken) を永続化（D15）
-  - SendSessionsList 再送（実行中表示の反映）
+確定時（UI スレッドへ AsyncInvoke、タブ生存を ReferenceEquals で確認）:
+  - tab.SessionId = id / LiveSessionIds へ登録 / onTabSession を UI へ push（rename に必要）
+  - SessionLayers.Set(id, layerToken) を永続化（D15。タブ消滅後でも永続化はする — その rollout の実態）
 ```
 
-- **並列 spawn の競合**: 同時に 2 つの codex タブを作ると候補が 2 つ出る。確定した rollout パスは panel-static な claimed 集合に入れ、他タブの候補から除外する（`LiveSessionIds` と同じ規律: UI スレッドで変異）
+- **並列 spawn の競合（帰属保証）**: 全 codex タブが同一 cwd を共有するため、「新しい rollout + cwd 一致」だけでは
+  同時 in-flight の 2 spawn を区別できない（claimed 集合は再 claim を防ぐだけで帰属を証明しない — Phase 2
+  Codex レビュー指摘）。**process-wide の spawn ゲート（SemaphoreSlim）で [codex 起動 → rollout claim] を直列化**し、
+  未 claim の一致 rollout が常に高々 1 つの状態を保証する。ゲートは StartSession が獲得し discovery タスクへ
+  引き渡し、finally で必ず解放。2 個目の codex タブは前のタブの ID 確定（通常数秒）を待ってから起動する
+- **タブ除去との競合（burn mode）**: 除去済みタブの discovery を単純中断すると、そのタブの rollout が未 claim の
+  まま残り次タブが誤 claim し得る。cancel は中断ではなく **burn mode** — ゲート保持中に自分の rollout を
+  claim だけして帰属せず捨てる（deadline は now+4s に短縮: rollout を書く前に死んだプロセスはもう書かない）
 - **発見失敗時**: `SessionId` は null のまま動作継続（ターミナルとしては完全に機能する）。resume 対象にならない・レイヤマッピングが残らないだけ。`Log.Write` に記録
 - 走査は必ず BG スレッド（SessionsCatalog と同じ規律）。読むのは 1 行目のみで軽量
 

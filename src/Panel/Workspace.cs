@@ -43,6 +43,9 @@ namespace CoRhino.Panel
         /// <summary>~/.corhino/session-names.json — user-given session names (owned by SessionNames).</summary>
         public static string SessionNamesPath => Path.Combine(BaseDir, "session-names.json");
 
+        /// <summary>~/.corhino/session-layers.json — codex sessionId → layer token map (owned by SessionLayers).</summary>
+        public static string SessionLayersPath => Path.Combine(BaseDir, "session-layers.json");
+
         /// <summary>~/.corhino/skills — the user's personal skill plugin root.</summary>
         public static string UserSkillsRoot => Path.Combine(BaseDir, "skills");
 
@@ -77,19 +80,25 @@ namespace CoRhino.Panel
         }
 
         /// <summary>
-        /// Ensure the shared workspace exists; seed its CLAUDE.md once (then
-        /// user-owned). Returns the dir — the cwd of every claude session.
+        /// Ensure the shared workspace exists; seed its guide files once (then
+        /// user-owned). Returns the dir — the cwd of every agent session.
+        /// CLAUDE.md and AGENTS.md carry the SAME content from one template:
+        /// claude reads the former, codex the latter. They are seeded as separate
+        /// files (not a symlink) so the user can grow them apart per CLI.
         /// </summary>
         public static string EnsureWorkspace()
         {
             var root = WorkspaceRoot;
             Directory.CreateDirectory(root);
 
-            var claudeMd = Path.Combine(root, "CLAUDE.md");
-            if (!File.Exists(claudeMd))
+            foreach (var name in new[] { "CLAUDE.md", "AGENTS.md" })
             {
-                File.WriteAllText(claudeMd, ClaudeMdTemplate);
-                Log.Write($"[CoRhino] Seeded CLAUDE.md at {claudeMd}");
+                var path = Path.Combine(root, name);
+                if (!File.Exists(path))
+                {
+                    File.WriteAllText(path, WorkspaceGuideTemplate);
+                    Log.Write($"[CoRhino] Seeded {name} at {path}");
+                }
             }
 
             return root;
@@ -169,19 +178,20 @@ namespace CoRhino.Panel
         // Seed-time language (L10n follows Rhino's UI language): the file is
         // user-owned after the first seed, so it keeps the language it was born
         // with even if Rhino's language later changes — delete it to re-seed.
-        static string ClaudeMdTemplate => L10n.Japanese ? ClaudeMdTemplateJa : ClaudeMdTemplateEn;
+        static string WorkspaceGuideTemplate => L10n.Japanese ? WorkspaceGuideTemplateJa : WorkspaceGuideTemplateEn;
 
-        const string ClaudeMdTemplateJa = """
+        const string WorkspaceGuideTemplateJa = """
         # CoRhino Workspace
 
-        この CLAUDE.md は CoRhino が起動するすべての Claude セッションが共有する作業ディレクトリです。
-        セッションはアクティブな .3dm の場所ではなく常にこのディレクトリで起動します。Rhino の操作は
+        この文書は CoRhino が起動するすべてのエージェントセッション（Claude Code / Codex）が共有する
+        作業ディレクトリのガイドです。セッションはアクティブな .3dm の場所ではなく常にこのディレクトリで
+        起動します。Rhino の操作は
         `rhino` MCP サーバ（RhinoMCP）のツール経由で行ってください。接続先はパネルの Rhino インスタンス
         専用ポートのホストなので、ツール呼び出しは必ずそのパネルの Rhino に反映されます。
 
         ## 並列エージェントのルール（重要）
 
-        同じ Rhino ドキュメントに **複数の Claude が同時接続**していることがあります。互いの作業を
+        同じ Rhino ドキュメントに **複数のエージェントが同時接続**していることがあります。互いの作業を
         壊さないため:
 
         - あなたの担当レイヤは **システムプロンプトで `s-XXXXXXXX` の形式で指示**されます。
@@ -214,18 +224,18 @@ namespace CoRhino.Panel
           サブディレクトリを切ると衝突しない）
         """;
 
-        const string ClaudeMdTemplateEn = """
+        const string WorkspaceGuideTemplateEn = """
         # CoRhino Workspace
 
-        This CLAUDE.md belongs to the working directory shared by every Claude
-        session CoRhino starts. Sessions always launch here, not next to the
-        active .3dm. Operate Rhino through the tools of the `rhino` MCP server
+        This guide belongs to the working directory shared by every agent
+        session CoRhino starts (Claude Code / Codex). Sessions always launch
+        here, not next to the active .3dm. Operate Rhino through the tools of the `rhino` MCP server
         (RhinoMCP); it points at the panel's Rhino instance on its dedicated
         port, so every tool call lands in that panel's Rhino.
 
         ## Parallel-agent rules (important)
 
-        Multiple Claude sessions may be connected to the SAME Rhino document at
+        Multiple agent sessions may be connected to the SAME Rhino document at
         once. To keep from clobbering each other:
 
         - Your assigned layer is given in the system prompt in the form

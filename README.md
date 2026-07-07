@@ -1,7 +1,7 @@
 # CoRhino
 
-Rhino に **Claude Code をドックする** Rhino 8 プラグイン。サイドパネルに常駐した
-Claude Code が、いま開いているその Rhino を操作できる。
+Rhino に **AI コーディングエージェントをドックする** Rhino 8 プラグイン。サイドパネルに常駐した
+エージェント（Claude Code / Codex CLI、タブごとに選択）が、いま開いているその Rhino を操作できる。
 
 非エンジニアでも「パネルを開くだけ」で使えることを目標にしており、`MCPConnect` /
 設定ファイルの貼り付け / 手動の MCP 起動を一切踏ませない。Rhino 操作の実体（tools /
@@ -25,11 +25,10 @@ Rhino プロセス
 │   └── パネル = WebView + xterm.js (タブ式) に PTY 経由の claude を表示
 │        ├─ インスタンス専用ポートを採番 (base 10500)
 │        ├─ RhinoMCP ホストを MCPSpawn でそのポートに起動 (1パネル=1ホスト)
-│        └─ タブごと (= エージェント) に claude を並列起動
-│             ├─ 共有ワークスペース ~/.corhino/workspace/ を cwd に (CLAUDE.md)
-│             ├─ ~/.corhino/runtime/ にタブ専用の .mcp.json を生成
-│             ├─ ~/.corhino/skills/ をユーザースキル plugin としてロード (--plugin-dir)
-│             ├─ 同梱 cc-plugin をロード (save-rhino-skill = スキル保存メタスキル)
+│        └─ タブごと (= エージェント) に claude / codex を並列起動（＋メニューで選択）
+│             ├─ 共有ワークスペース ~/.corhino/workspace/ を cwd に (CLAUDE.md / AGENTS.md)
+│             ├─ claude: ~/.corhino/runtime/ のタブ専用 .mcp.json / codex: -c オーバーライド注入
+│             ├─ claude のみ: ~/.corhino/skills/ + 同梱 cc-plugin を --plugin-dir でロード
 │             └─ 全タブが同じ http://localhost:<port>/ に接続 (同じ doc を操作)
 └── Rhino-MCP-Platform プラグイン (.rhp)
      └── http://localhost:<port>/ で MCP ホストを提供
@@ -39,25 +38,28 @@ Rhino プロセス
   直接つながる。node router は使わない（パネルの意味論は「ドックされた“この”Rhino を操作」）。
 - **インスタンス単位のポート**: パネルごとに空きポートを採番するので、複数ドキュメントでも
   各パネルが自分の Rhino を操作する。
-- **1 ドキュメントに複数 claude（並列エージェント）**: 1パネル内のタブを「＋」で増やすと、
-  複数の claude が同じ Rhino を並列に操作する。RhinoMCP ホストはステートレスでツール実行を
+- **1 ドキュメントに複数エージェント（並列・CLI 混在可）**: 1パネル内のタブを「＋」で増やすと、
+  複数のエージェント（claude / codex 混在可）が同じ Rhino を並列に操作する。RhinoMCP ホストはステートレスでツール実行を
   UI スレッドで直列化するため安全。各セッションには専用レイヤ（`s-XXXXXXXX/`）が割り当てられ、
   書き込みが衝突しないようになっている（再開しても同じレイヤに戻る）。
-- **セッション隔離**: claude は `--strict-mcp-config --mcp-config <runtime>/.mcp.json` で
-  起動し、ユーザーのグローバル/プロジェクト MCP 設定を読み込まない。`~/.claude` を汚さない。
+- **セッション隔離**: claude は `--strict-mcp-config --mcp-config <runtime>/.mcp.json` で起動し、
+  ユーザーのグローバル/プロジェクト MCP 設定を読み込まない。`~/.claude` を汚さない。codex は
+  `--disable plugins` + 既存 MCP サーバの `enabled=false` + `rhino` サーバ追加を `-c` オーバーライドで
+  spawn 時にのみ注入する。`~/.codex/config.toml`・auth はいずれも無変更（再ログイン不要）。
 - **ユーザー自作スキル**: `~/.corhino/skills/`（初回起動時に骨格を自動生成）を `--plugin-dir` で
   全セッションに読み込む。パネル内の claude に「今の手順をスキルにして」と頼むと、同梱の
   `save-rhino-skill` メタスキルが規約どおり `skills/<name>/SKILL.md` を書き出す（手で置いてもよい。
   書き方は seed される `~/.corhino/skills/README.md` を参照）。全パネル・全タブに載り、
   実行中セッションへの反映は `/plugin reload-plugins`。
 - **スキル一覧ドロワー**: タブバー右端の ⚡ で、溜まったスキルの一覧（自作/同梱バッジ・説明）を
-  ターミナル横に表示する。保存直後のスキルはライブで現れ、未反映なら ⚠ が付き、ヘッダの ⟳ 一発で
+  ターミナル横に表示する（claude タブのみ。codex タブでは無効化される）。保存直後のスキルはライブで現れ、未反映なら ⚠ が付き、ヘッダの ⟳ 一発で
   アクティブなセッションに反映できる。「エディタで開く」で SKILL.md を直接編集。
-- **セッション管理**: 会話は claude が自動保存しており、タブバー右端の 🕘 で過去セッションを一覧・
-  ワンクリック再開できる（タイトルは claude の自動生成、日時つき。開いているセッション以外は
+- **セッション管理**: 会話は CLI が自動保存しており、タブバー右端の 🕘 で過去セッションを一覧・
+  ワンクリック再開できる（タイトルは自動生成、日時つき。開いているセッション以外は
   いつでも再開可能）。タブラベルのダブルクリック（または一覧の ✎）で名前を付けられ、名前は
   再開後も引き継がれる。不要になったセッションは一覧の 🗑（2度押しで確定）で削除できる。全セッションが共有ワークスペース（`~/.corhino/workspace/`）で動くので、
-  Rhino を再起動しても履歴が繋がる。
+  Rhino を再起動しても履歴が繋がる。**一覧・再開・削除は現状 claude セッションのみ**（codex は
+  [roadmap](docs/roadmap.md) — Sessions Drawer の codex 対応で追加予定）。
 - **言語**: パネル UI・ダイアログ・生成されるテンプレート（CLAUDE.md 等）は Rhino の言語設定に
   追従する（日本語 Rhino なら日本語、それ以外は英語）。
 - **MCP ホスト起動**: `RHINO_MCP_AUTOSTART_PORT` をセットして hidden コマンド `_-MCPSpawn`
@@ -68,6 +70,8 @@ Rhino プロセス
 - **Rhino 8**（macOS: Apple Silicon / Intel、Windows）
 - **[Claude Code](https://claude.com/claude-code) CLI** (`claude`) が PATH 上にあること
   - 見つからない場合はパネルがログインシェル (`bash -l` / `cmd.exe`) にフォールバックする
+- （任意）**[Codex CLI](https://developers.openai.com/codex/cli)** (`codex`) — あれば ＋メニューから
+  codex タブを起動できる。無ければメニューでグレーアウトされるだけで claude 側に影響はない
 - **Rhino-MCP-Platform**（yak パッケージ）
   - 未導入ならパネルが検出し、同意ダイアログ → `yak install` → 再起動案内まで自動で行う
 
@@ -95,13 +99,14 @@ dotnet build src/CoRhino.csproj
 
 ### 並列エージェント（タブ）
 
-タブバーの「＋」で **同じ Rhino ドキュメントに対して claude をもう1つ**起動できる。各タブは
-独立した Claude セッション（別履歴）で、セッションごとの専用レイヤ接頭辞（`s-XXXXXXXX/`）が
+タブバーの「＋」で CLI（Claude Code / Codex）を選び、**同じ Rhino ドキュメントに対して
+エージェントをもう1つ**起動できる。タブには CLI バッジ（● claude / ◆ codex）が付く。各タブは
+独立したセッション（別履歴）で、セッションごとの専用レイヤ接頭辞（`s-XXXXXXXX/`）が
 割り当てられる。各エージェントは自分のレイヤ配下にだけ書き込み、他レイヤは読み取りのみとする
 規約で動くので、並列で別々の作業（例: 片方がジオメトリ生成、片方が解析）を進めても衝突しにくい。
 タブの「×」でそのエージェントだけ終了できる。
 
-> 注意: レイヤ分離は CLAUDE.md による**規約**であり、ホストが強制するわけではない。同じオブジェクトを
+> 注意: レイヤ分離は CLAUDE.md / AGENTS.md による**規約**であり、ホストが強制するわけではない。同じオブジェクトを
 > 跨いで触ると論理衝突し得る。また各エージェントは互いの変更をリアルタイムには知らない（最新状態は
 > 都度問い合わせる）。
 
@@ -120,14 +125,16 @@ src/                        C# Rhino プラグイン
 ├── CoRhinoPlugin.cs        プラグイン本体（起動時ロード、パネル登録）
 ├── Commands/               "CoRhino" コマンド（パネルを開く）
 ├── Panel/
-│   ├── CoRhinoPanel.cs     WebView + xterm.js (タブ式)、ポート採番、複数 claude 起動、MCP ホスト起動
+│   ├── CoRhinoPanel.cs     WebView + xterm.js (タブ式)、ポート採番、複数エージェント起動、MCP ホスト起動
 │   ├── SkillsCatalog.cs    スキル一覧ドロワーのデータ層（スキャン + frontmatter パース）
 │   ├── SessionsCatalog.cs  セッション一覧ドロワーのデータ層（~/.claude/projects のトランスクリプトスキャン）
 │   ├── SessionNames.cs     ユーザーが付けたセッション名の永続化（~/.corhino/session-names.json）
-│   ├── Workspace.cs        ~/.corhino/workspace/（共有 cwd + CLAUDE.md）と runtime/ の .mcp.json、
+│   ├── SessionLayers.cs    codex セッション ID → レイヤの永続化（~/.corhino/session-layers.json）
+│   ├── Workspace.cs        ~/.corhino/workspace/（共有 cwd + CLAUDE.md/AGENTS.md）と runtime/ の .mcp.json、
 │   │                       ~/.corhino/skills/（ユーザースキル plugin 骨格）の seed
 │   └── RhinoMcpInstaller.cs  Rhino-MCP-Platform の yak オンボーディング
-├── Pty/                    PTY セッション（Porta.Pty）と claude CLI 解決
+├── Cli/                    CLI アダプタ層（IAgentCli / ClaudeCli / CodexCli — 起動引数・隔離・ID 発見）
+├── Pty/                    PTY セッション（Porta.Pty）と CLI 解決
 └── Resources/icon.png      パネルアイコン
 cc-plugin/                  同梱 Claude Code プラグイン（save-rhino-skill 等のオンボーディングスキル）
 ui/                         パネル UI（TypeScript + xterm.js, vite）

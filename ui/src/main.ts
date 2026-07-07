@@ -5,14 +5,24 @@ import { createSkillsDrawer, type SkillsListPayload } from './skills-drawer'
 import { createSessionsDrawer, type SessionsListPayload } from './sessions-drawer'
 import { L } from './i18n'
 
-// The host created an agent (tab). sessionId is the claude session it runs;
+// The CLI a tab runs — the wire enum shared with the host (createTab /
+// onTabCreated / onCliAvailability).
+type CliKind = 'claude' | 'codex'
+
+// The host created an agent (tab). sessionId is the session it runs (null for
+// a codex tab until the host discovers the id and pushes onTabSession);
 // label is the initial tab text (custom name > auto title > agentId) —
 // delivered with creation so a resumed tab never flashes "agent-N" first.
 // customName is the user-given name only (null when the label is an auto title
 // or the agentId) — the rename input must prefill with THIS, never the label,
 // or a blur-commit would freeze an auto title into a permanent custom name.
-type TabCreatedPayload = { agentId: string; sessionId: string | null; label: string; customName: string | null }
+type TabCreatedPayload = { agentId: string; sessionId: string | null; label: string; customName: string | null; cli: CliKind }
 type TabLabelPayload = { agentId: string; label: string; customName: string | null }
+// A codex tab's session id was discovered after spawn.
+type TabSessionPayload = { agentId: string; sessionId: string }
+// Which CLIs resolve on PATH (probed once per panel boot; missing ones grey
+// out in the + menu).
+type CliAvailabilityPayload = { claude: boolean; codex: boolean }
 
 declare global {
   interface Window {
@@ -34,6 +44,10 @@ declare global {
       onSessionsList: (payload: SessionsListPayload) => void
       // A tab's label changed (rename, or an auto title appeared in a scan).
       onTabLabel: (payload: TabLabelPayload) => void
+      // A codex tab's session id landed (rename becomes possible).
+      onTabSession: (payload: TabSessionPayload) => void
+      // PATH probe result for the + menu.
+      onCliAvailability: (payload: CliAvailabilityPayload) => void
     }
     chrome?: { webview?: { postMessage: (msg: string) => void } }
   }
@@ -41,7 +55,7 @@ declare global {
 
 type Outbound =
   | { type: 'ready' }
-  | { type: 'createTab' }
+  | { type: 'createTab'; cli: CliKind }
   | { type: 'closeTab'; agentId: string }
   | { type: 'stdin'; agentId: string; data: string }
   | { type: 'resize'; agentId: string; cols: number; rows: number }
@@ -145,6 +159,24 @@ function boot() {
     color: #aaa; cursor: pointer; border-right: 1px solid #2a2a2a; font-size: 16px; line-height: 1;
   }
   #addtab:hover { background: #222; color: #fff; }
+  /* CLI picker for "+" — fixed-positioned so #tabbar's overflow doesn't clip it. */
+  #climenu {
+    position: fixed; z-index: 10; min-width: 150px;
+    background: #1e1e1e; border: 1px solid #333; border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,.5); padding: 4px 0;
+    font: 12px ui-monospace, Menlo, monospace; user-select: none;
+  }
+  .climenu-item {
+    display: flex; align-items: center; gap: 8px; padding: 5px 12px;
+    color: #ccc; cursor: pointer; white-space: nowrap;
+  }
+  .climenu-item:hover { background: #2a2a2a; color: #fff; }
+  .climenu-item.disabled { opacity: 0.35; cursor: default; }
+  .climenu-item.disabled:hover { background: transparent; color: #ccc; }
+  .clibadge { font-size: 10px; }
+  .clibadge.claude { color: #d0846a; }
+  .clibadge.codex { color: #6f9fdf; }
+  .tab .clibadge { flex: 0 0 auto; }
   #main { display: flex; flex-direction: row; flex: 1 1 auto; overflow: hidden; }
   #terminals { position: relative; flex: 1 1 auto; overflow: hidden; }
   .termpane { position: absolute; inset: 0; padding: 4px; box-sizing: border-box; }
@@ -178,8 +210,78 @@ ${isWindowsWebView2 ? `
   addBtn.id = 'addtab'
   addBtn.textContent = '+'
   addBtn.title = L.newAgent
-  addBtn.addEventListener('click', () => post({ type: 'createTab' }))
+  addBtn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    toggleCliMenu()
+  })
   tabscroll.appendChild(addBtn)
+
+  // ---- "+" CLI picker ------------------------------------------------------
+  // Small transient dropdown under the + button: pick which CLI the new tab
+  // runs. Items grey out while their binary is missing from PATH (availability
+  // arrives via onCliAvailability; claude starts enabled — it is the default
+  // CLI and has a shell fallback — codex starts disabled until proven present).
+  const CLI_META: { id: CliKind; name: string; badge: string }[] = [
+    { id: 'claude', name: 'Claude Code', badge: '●' },
+    { id: 'codex', name: 'Codex', badge: '◆' },
+  ]
+  let cliAvailability: CliAvailabilityPayload = { claude: true, codex: false }
+  let cliMenu: HTMLElement | null = null
+
+  function closeCliMenu() {
+    cliMenu?.remove()
+    cliMenu = null
+  }
+
+  function toggleCliMenu() {
+    if (cliMenu) {
+      closeCliMenu()
+      return
+    }
+    const menu = document.createElement('div')
+    menu.id = 'climenu'
+    for (const meta of CLI_META) {
+      const item = document.createElement('div')
+      item.className = 'climenu-item'
+      const badge = document.createElement('span')
+      badge.className = `clibadge ${meta.id}`
+      badge.textContent = meta.badge
+      const name = document.createElement('span')
+      name.textContent = meta.name
+      item.appendChild(badge)
+      item.appendChild(name)
+      if (cliAvailability[meta.id]) {
+        item.addEventListener('click', () => {
+          closeCliMenu()
+          post({ type: 'createTab', cli: meta.id })
+        })
+      } else {
+        item.classList.add('disabled')
+        item.title = L.cliUnavailable(meta.name)
+      }
+      menu.appendChild(item)
+    }
+    const rect = addBtn.getBoundingClientRect()
+    menu.style.left = `${Math.round(rect.left)}px`
+    menu.style.top = `${Math.round(rect.bottom + 2)}px`
+    document.body.appendChild(menu)
+    cliMenu = menu
+  }
+
+  // Any click outside (capture: before xterm handlers) or Esc dismisses it.
+  // The + button is excluded — its own handler toggles, and this capture
+  // listener runs first (closing here would make + reopen the menu).
+  document.addEventListener('click', (e) => {
+    const t = e.target as Node
+    if (cliMenu && !cliMenu.contains(t) && !addBtn.contains(t)) closeCliMenu()
+  }, { capture: true })
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && cliMenu) {
+      e.stopPropagation()
+      closeCliMenu()
+    }
+  }, { capture: true })
+  // --------------------------------------------------------------------------
   const termsEl = document.createElement('div')
   termsEl.id = 'terminals'
 
@@ -223,6 +325,7 @@ ${isWindowsWebView2 ? `
     agentId: string
     sessionId: string | null
     customName: string | null
+    cli: CliKind
     term: Terminal
     fit: FitAddon
     pane: HTMLElement
@@ -273,6 +376,10 @@ ${isWindowsWebView2 ? `
     // The pane just became visible; fit to its real size and focus it.
     safeFit(tab)
     tab.term.focus()
+    // Codex tabs have no skill loading — grey ⚡ out (and close the drawer)
+    // while one is active. Must precede notifyActiveTabChanged, which would
+    // otherwise request a list the host ignores.
+    drawer.setEnabled(tab.cli !== 'codex')
     // needsReload is per-tab (each spawned/reloaded at a different time), so the
     // drawer re-requests the list from the new active tab's perspective.
     drawer.notifyActiveTabChanged()
@@ -280,6 +387,7 @@ ${isWindowsWebView2 ? `
 
   function addTab(payload: TabCreatedPayload) {
     const { agentId, sessionId, label, customName } = payload
+    const cli: CliKind = payload.cli === 'codex' ? 'codex' : 'claude'
     if (tabs.has(agentId)) {
       activateTab(agentId)
       return
@@ -289,8 +397,8 @@ ${isWindowsWebView2 ? `
     termsEl.appendChild(pane)
 
     const { term, fit } = createTerminal()
-    const { tabEl, labelEl } = buildTabButton(agentId, label)
-    const tab: Tab = { agentId, sessionId, customName, term, fit, pane, tabEl, labelEl, lastCols: term.cols, lastRows: term.rows }
+    const { tabEl, labelEl } = buildTabButton(agentId, label, cli)
+    const tab: Tab = { agentId, sessionId, customName, cli, term, fit, pane, tabEl, labelEl, lastCols: term.cols, lastRows: term.rows }
     tabs.set(agentId, tab)
     tabscroll.insertBefore(tab.tabEl, addBtn)
 
@@ -324,9 +432,15 @@ ${isWindowsWebView2 ? `
     debug(`tab ${agentId} created ${term.cols}x${term.rows}`)
   }
 
-  function buildTabButton(agentId: string, initialLabel: string): { tabEl: HTMLElement; labelEl: HTMLElement } {
+  function buildTabButton(agentId: string, initialLabel: string, cli: CliKind): { tabEl: HTMLElement; labelEl: HTMLElement } {
     const el = document.createElement('div')
     el.className = 'tab'
+    // CLI badge (matches the + menu): ● claude / ◆ codex.
+    const badge = document.createElement('span')
+    badge.className = `clibadge ${cli}`
+    badge.textContent = cli === 'codex' ? '◆' : '●'
+    badge.title = cli === 'codex' ? 'Codex' : 'Claude Code'
+    el.appendChild(badge)
     const label = document.createElement('span')
     label.className = 'tablabel'
     label.textContent = initialLabel
@@ -493,6 +607,19 @@ ${isWindowsWebView2 ? `
       if (!tab) return
       tab.customName = payload.customName
       tab.labelEl.textContent = payload.label
+    },
+    onTabSession(payload: TabSessionPayload) {
+      const tab = tabs.get(payload.agentId)
+      if (!tab) return
+      tab.sessionId = payload.sessionId
+    },
+    onCliAvailability(payload: CliAvailabilityPayload) {
+      cliAvailability = payload
+      // If the menu is open, rebuild it with the fresh availability.
+      if (cliMenu) {
+        closeCliMenu()
+        toggleCliMenu()
+      }
     },
   }
 

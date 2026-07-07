@@ -14,6 +14,8 @@ const ja = {
   newAgent: '新しいエージェント',
   closeAgent: 'このエージェントを終了',
   renameTabHint: 'ダブルクリックで名前を変更',
+  cliUnavailable: (name: string) => `${name} が PATH に見つかりません`,
+  skillsUnsupported: 'この CLI ではスキル一覧は使えません',
   // Skills Drawer
   skillsBtn: 'スキル一覧',
   skillsReload: 'アクティブなセッションにスキルを再読み込み (/plugin reload-plugins)',
@@ -42,6 +44,8 @@ const en: typeof ja = {
   newAgent: 'New agent',
   closeAgent: 'Close this agent',
   renameTabHint: 'Double-click to rename',
+  cliUnavailable: (name: string) => `${name} not found on PATH`,
+  skillsUnsupported: 'Skills are not available for this CLI',
   skillsBtn: 'Skills',
   skillsReload: 'Reload skills into the active session (/plugin reload-plugins)',
   skillsEmpty: 'No skills yet. Ask claude to "turn this workflow into a skill" and it lands here.',
