@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.Json;
 using Eto.Forms;
 using Rhino;
+using CoRhino.Cli;
 using CoRhino.Pty;
 
 namespace CoRhino.Panel
@@ -19,10 +20,15 @@ namespace CoRhino.Panel
         // one per UI tab — all sharing the panel's single RhinoMCP host port AND
         // the one workspace cwd (~/.corhino/workspace). Each has its own PTY and
         // its own claude session (SessionId); the session's layer prefix
-        // (LayerFor) keeps parallel agents writing into disjoint Rhino layers.
+        // (IAgentCli.LayerTokenFor) keeps parallel agents writing into disjoint
+        // Rhino layers.
         sealed class AgentTab
         {
             public required string AgentId;
+            // The CLI this tab runs. Every per-CLI concern (launch args, session
+            // identity, layer strategy) goes through this adapter. Only Claude is
+            // registered so far — every tab runs it.
+            public IAgentCli Cli = AgentCliRegistry.Claude;
             public PtySession Session = new();
             // True from spawn until StartSession finishes wiring. Counts as "alive"
             // so EnsureSessionAlive doesn't respawn a tab whose PTY is still coming up
@@ -46,6 +52,10 @@ namespace CoRhino.Panel
             // materializes as a transcript (renaming such a tab leaves a harmless
             // orphan in session-names.json).
             public string? SessionId;
+            // The parallel-agent Rhino layer this tab confines its writes to.
+            // Resolved ONCE at tab creation via the adapter (see IAgentCli.LayerTokenFor)
+            // and threaded through StartSession's SpawnContext.
+            public string? LayerToken;
             // True → spawn with --resume SessionId (Sessions Drawer resume);
             // false → --session-id SessionId (fresh conversation).
             public bool Resume;
@@ -58,14 +68,6 @@ namespace CoRhino.Panel
             // flag. UI thread writes, launch thread reads → volatile.
             public volatile bool ReleaseSessionOnLaunchExit;
         }
-
-        // This session's Rhino layer prefix, derived deterministically from the
-        // sessionId so a resumed session gets the SAME layer it created objects
-        // in — no {sessionId → layer} index to persist. Injected per-spawn via
-        // --append-system-prompt (the shared-workspace CLAUDE.md can't carry a
-        // per-agent value).
-        static string LayerFor(string sessionId) =>
-            "s-" + sessionId.Substring(0, Math.Min(8, sessionId.Length));
 
         readonly WebView _webView;
         // agentId -> tab. Mutated only on the UI thread (message handlers and the
@@ -189,17 +191,20 @@ namespace CoRhino.Panel
         // (if ready), and start its claude in the background. Returns the new tab.
         AgentTab SpawnTab()
         {
+            var cli = AgentCliRegistry.Claude;
             var agentId = $"agent-{_nextAgentNum++}";
             var tab = new AgentTab
             {
                 AgentId = agentId,
+                Cli = cli,
                 Starting = true,
                 SessionId = Guid.NewGuid().ToString(),
             };
+            tab.LayerToken = cli.LayerTokenFor(tab.SessionId);
             RegisterTab(tab);
             WireSession(tab);
 
-            Log.Write($"[CoRhino] Spawning tab {agentId} (session {tab.SessionId}, layer {LayerFor(tab.SessionId!)}).");
+            Log.Write($"[CoRhino] Spawning tab {agentId} ({cli.BinaryName}, session {tab.SessionId}, layer {tab.LayerToken}).");
             AnnounceTab(tab);
             LaunchSessionInBackground(tab);
             RequestSessionsScan(); // live flags changed
@@ -394,83 +399,47 @@ namespace CoRhino.Panel
             Log.Write($"[CoRhino] StartSession({tab.AgentId}) entered.");
             try
             {
-                var (claudePath, loginPath) = CliResolver.Resolve();
+                var cli = tab.Cli;
+                var (cliPath, loginPath) = CliResolver.Resolve(cli.BinaryName);
                 var cwd = Workspace.EnsureWorkspace();
 
                 var env = new Dictionary<string, string>();
                 if (!string.IsNullOrEmpty(loginPath)) env["PATH"] = loginPath!;
 
-                // Load ONLY this agent's RhinoMCP config (which points at this
-                // instance's host port and carries this agent's header) and ignore
-                // the user's global/project MCP settings, so claude talks to this
-                // Rhino and nothing leaks in. The user's personal skills ride along
-                // as a local plugin — same stance: delivered per session, nothing
-                // written to ~/.claude.
-                var claudeArgs = new List<string>
-                {
-                    "--strict-mcp-config",
-                    "--mcp-config", Workspace.EnsureAgentMcpConfig(_hostPort, tab.AgentId),
-                    "--plugin-dir", Workspace.EnsureUserSkillsPlugin(),
-                };
-
-                if (tab.SessionId != null)
-                {
-                    // Pin the session identity: fresh tabs get their pre-generated
-                    // GUID (--session-id) so the tab↔transcript mapping is known
-                    // without parsing anything; resumed tabs reattach to the
-                    // existing id (--resume, no --fork-session — the same jsonl
-                    // keeps growing).
-                    claudeArgs.Add(tab.Resume ? "--resume" : "--session-id");
-                    claudeArgs.Add(tab.SessionId);
-                    // The parallel-agent layer, session-bound (see LayerFor). The
-                    // shared workspace CLAUDE.md holds the rules; this carries the
-                    // one per-session value it can't.
-                    claudeArgs.Add("--append-system-prompt");
-                    claudeArgs.Add(L10n.T(
-                        $"このセッションの担当 Rhino レイヤは `{LayerFor(tab.SessionId)}` です。" +
-                        "オブジェクトの作成・変更・削除はこのレイヤ配下のみで行ってください" +
-                        "（詳細は CLAUDE.md の「並列エージェントのルール」）。",
-                        $"This session's assigned Rhino layer is `{LayerFor(tab.SessionId)}`. " +
-                        "Create, modify, and delete objects only under this layer " +
-                        "(see the parallel-agent rules in CLAUDE.md)."));
-                }
-
-                // CoRhino's bundled cc-plugin (onboarding skills like save-rhino-skill)
-                // ships next to the assembly, like web/. Skip silently if a stripped
-                // install lacks it — the session works without onboarding skills.
-                var bundledPlugin = Path.Combine(
-                    Path.GetDirectoryName(typeof(CoRhinoPanel).Assembly.Location) ?? string.Empty,
-                    "cc-plugin");
-                if (Directory.Exists(bundledPlugin))
-                {
-                    claudeArgs.Add("--plugin-dir");
-                    claudeArgs.Add(bundledPlugin);
-                }
+                // Everything CLI-specific — MCP isolation, session identity,
+                // layer-instruction injection — is the adapter's job; this method
+                // only owns the CLI-independent PTY plumbing.
+                var ctx = new SpawnContext(
+                    tab.AgentId, _hostPort, cwd,
+                    tab.SessionId, tab.Resume,
+                    tab.LayerToken,
+                    DateTime.UtcNow);
+                var args = cli.BuildArgs(ctx);
 
                 var isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
-                if (string.IsNullOrEmpty(claudePath))
+                if (string.IsNullOrEmpty(cliPath))
                 {
                     var fallbackApp = isWindows ? "cmd.exe" : "/bin/bash";
                     var fallbackArgs = isWindows ? Array.Empty<string>() : new[] { "-l" };
-                    Log.User($"[CoRhino] `claude` CLI not found on PATH. Falling back to {fallbackApp}.");
+                    Log.User($"[CoRhino] `{cli.BinaryName}` CLI not found on PATH. Falling back to {fallbackApp}.");
                     Log.Write("[CoRhino] PATH=" + (loginPath ?? "<none>"));
                     await tab.Session.StartAsync(fallbackApp, fallbackArgs, cwd, env).ConfigureAwait(false);
                     Log.Write($"[CoRhino] {fallbackApp} spawned in {cwd}");
                 }
                 else
                 {
-                    Log.Write($"[CoRhino] Spawning {claudePath} in {cwd}");
-                    if (isWindows && !claudePath!.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                    Log.Write($"[CoRhino] Spawning {cliPath} in {cwd}");
+                    if (isWindows && !cliPath!.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
                     {
                         // Only .exe can be launched directly by CreateProcess on Windows.
                         // .cmd / .bat / extensionless shell-shims (npm, fnm) must go through cmd.exe.
-                        await tab.Session.StartAsync("cmd.exe", new[] { "/c", claudePath! }.Concat(claudeArgs).ToArray(), cwd, env).ConfigureAwait(false);
+                        await tab.Session.StartAsync("cmd.exe", new[] { "/c", cliPath! }.Concat(args).ToArray(), cwd, env).ConfigureAwait(false);
                     }
                     else
                     {
-                        await tab.Session.StartAsync(claudePath!, claudeArgs, cwd, env).ConfigureAwait(false);
+                        await tab.Session.StartAsync(cliPath!, args, cwd, env).ConfigureAwait(false);
                     }
-                    Log.Write($"[CoRhino] claude spawned in {cwd}");
+                    Log.Write($"[CoRhino] {cli.BinaryName} spawned in {cwd}");
                 }
             }
             catch (Exception ex)
@@ -843,11 +812,13 @@ namespace CoRhino.Panel
             var tab = new AgentTab
             {
                 AgentId = $"agent-{_nextAgentNum++}",
+                Cli = AgentCliRegistry.Claude, // the claude catalog listed it
                 Starting = true,
                 SessionId = sessionId,
                 Resume = true,
                 CustomName = SessionNames.LoadAll().TryGetValue(sessionId, out var n) ? n : null,
             };
+            tab.LayerToken = tab.Cli.LayerTokenFor(sessionId);
             RegisterTab(tab);
             WireSession(tab);
             Log.Write($"[CoRhino] Resuming session {sessionId} in {tab.AgentId}.");

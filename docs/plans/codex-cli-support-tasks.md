@@ -51,31 +51,31 @@ localhost:10590 に立て、`codex exec`（codex-cli 0.142.5）で各構成を�
 
 ---
 
-## Phase 1: アダプタ層導入（claude リファクタ・挙動変更なし）
+## Phase 1: アダプタ層導入（claude リファクタ・挙動変更なし）✅ コード完了（2026-07-07・実機スモークのみ残）
 
 **このフェーズの完了条件は「claude の現行動作が 1 ミリも変わらないこと」**。codex はまだ登場しない。
 
-- [ ] **1-1**: `src/Cli/AgentCliKind.cs` + `src/Cli/IAgentCli.cs` + `SpawnContext` record を作成
-  - 設計書 4.2 のシグネチャ。`SessionEntry` は既存 SessionsCatalog の型を流用または昇格
-- [ ] **1-2**: `CliResolver.Resolve(string binaryName)` へ汎用化 + 結果キャッシュ
-  - `claude` ハードコードを排除。既存呼び出し元は `Resolve("claude")` に
-  - キャッシュは binary 名キー・プロセス生存中有効（PATH 変更は Rhino 再起動で拾う扱い）
-- [ ] **1-3**: `src/Cli/ClaudeCli.cs` を作成し、`StartSession` の claude 固有部を移設
-  - `BuildArgs`: `--strict-mcp-config` / `--mcp-config` / `--plugin-dir` ×2 / `--session-id` | `--resume` / `--append-system-prompt` の組み立て
-  - `DiscoverSessionIdAsync`: `ctx.SessionId` を即時返す（claude は事前採番）
-  - `ScanSessions` / `DeleteSession`: 既存 `SessionsCatalog` への委譲
-- [ ] **1-4**: `AgentTab` に `Cli`（`IAgentCli`）を追加し、`StartSession` をアダプタ委譲に書き換え
-  - Windows の `.exe` 判定 / `cmd.exe /c` ラップ、PTY spawn、フォールバックは Panel 側に残す（CLI 非依存の PTY 配線）
-  - `LayerFor` の呼び出し点を `SpawnContext.LayerToken` の組み立てに一元化
-- [ ] **1-5**: `src/Cli/AgentCliRegistry.cs`（Kind→instance、当面 Claude のみ登録）
-- [ ] **1-6**: ビルド + 実機スモーク（パネル起動 → agent-1 が従来どおり claude で立ち、MCP 接続・タブ増減・resume が動く）
+- [x] **1-1**: `src/Cli/AgentCliKind.cs` + `src/Cli/IAgentCli.cs` + `SpawnContext` record を作成
+  - 計画からの逸脱: `ScanSessions`/`DeleteSession` は interface に**含めなかった**（Phase 3 で使う面を
+    先行定義すると Phase 1-2 の間 dead surface になる。Phase 3 で拡張する）。`LayerTokenFor` を追加
+    （レイヤ戦略は CLI 差分なのでアダプタが所有）
+- [x] **1-2**: `CliResolver.Resolve(string binaryName)` へ汎用化
+  - 計画からの逸脱: **キャッシュは実装しない**（Codex レビュー指摘: 解決結果の固定は「起動中に CLI を
+    インストールしたら次の spawn で拾える」現行挙動を壊す）。availability プローブは Phase 2 の
+    `onCliAvailability` push（BG・パネル ready 時に一度）で賄う — 設計書 5.1 改訂済み
+- [x] **1-3**: `src/Cli/ClaudeCli.cs` — `BuildArgs`（引数列は旧実装と同順） / `DiscoverSessionIdAsync`（即時返し）
+- [x] **1-4**: `AgentTab.Cli` 追加、`StartSession` をアダプタ委譲に書き換え（PTY 配線・フォールバック・
+  Windows ラップは Panel 残置）。`LayerFor` は `ClaudeCli.LayerTokenFor` へ移設
+- [x] **1-5**: `src/Cli/AgentCliRegistry.cs`（Claude のみ登録。Codex は Phase 2 で追加）
+- [x] **1-6**: ビルド ✅（0 警告 0 エラー）/ 実機スモーク ✅（2026-07-07 ユーザー確認: 問題なし）
 
 ### 📋 Codex レビュー
-- [ ] **1-7**: 対象: `src/Cli/*`, `CoRhinoPanel.cs`, `CliResolver.cs`
-  - 観点: 挙動不変の確認（引数列の一致）、スレッド規律（UI スレッド変異ルール）の維持
+- [x] **1-7**: 実施済み（2 ラウンド）
+  - R1 指摘 High: resolver キャッシュ = 挙動差分 → キャッシュ撤去で解消
+  - R2: 挙動同一を確認（差は binaryName パラメータ化のみ）。引数列・スレッド規律とも問題なし
+  - 申し送り: `CliResolver` の binaryName はシェル埋め込みのためアダプタ定数以外を渡さない（architecture.md 2.7 に明記）
 
 ---
-
 ## Phase 2: codex タブの起動（spawn + MCP + レイヤ + ID 発見）
 
 - [ ] **2-1**: `Workspace.EnsureWorkspace()` に AGENTS.md seed を追加（D16）

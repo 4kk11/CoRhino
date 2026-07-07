@@ -7,33 +7,39 @@ using System.Text.RegularExpressions;
 
 namespace CoRhino.Pty
 {
+    /// <summary>
+    /// Resolves an agent CLI binary ("claude", "codex", …) to an absolute path,
+    /// plus the login shell's PATH. Resolved fresh on every call — spawns always
+    /// see the current PATH state (a CLI installed or moved while Rhino runs is
+    /// picked up by the next spawn). Callers needing repeated availability info
+    /// (the tab-bar's CLI menu) probe once on a background thread and hold the
+    /// result themselves.
+    /// </summary>
     internal static class CliResolver
     {
-        public static (string? clausePath, string? loginPath) Resolve()
+        public static (string? cliPath, string? loginPath) Resolve(string binaryName)
         {
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            {
-                return ResolveWindows();
-            }
-            return ResolveUnix();
+            return RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                ? ResolveWindows(binaryName)
+                : ResolveUnix(binaryName);
         }
 
-        static (string?, string?) ResolveUnix()
+        static (string?, string?) ResolveUnix(string binaryName)
         {
-            string? claudePath = RunLoginShell("command -v claude || which claude");
+            string? cliPath = RunLoginShell($"command -v {binaryName} || which {binaryName}");
             string? loginPath = RunLoginShell("echo -n \"$PATH\"");
-            return (claudePath, loginPath);
+            return (cliPath, loginPath);
         }
 
-        static (string?, string?) ResolveWindows()
+        static (string?, string?) ResolveWindows(string binaryName)
         {
-            string? claudePath = null;
+            string? cliPath = null;
             try
             {
                 var psi = new ProcessStartInfo
                 {
                     FileName = "where.exe",
-                    Arguments = "claude",
+                    Arguments = binaryName,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     UseShellExecute = false,
@@ -53,7 +59,7 @@ namespace CoRhino.Pty
                     // Prefer paths that CreateProcess can launch directly (.exe).
                     // Then .cmd/.bat (must be wrapped via cmd.exe by the caller).
                     // Avoid extensionless shell-shim scripts (e.g. fnm/npm sh shims) — they fail with "not a valid Win32 application".
-                    claudePath =
+                    cliPath =
                         lines.FirstOrDefault(l => l.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
                         ?? lines.FirstOrDefault(l => l.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
                         ?? lines.FirstOrDefault(l => l.EndsWith(".bat", StringComparison.OrdinalIgnoreCase))
@@ -63,17 +69,17 @@ namespace CoRhino.Pty
                     // Resolving the .exe lets us bypass cmd.exe — going through cmd.exe interferes with
                     // ConPTY passthrough of ANSI control sequences, breaking TUIs like Ink that rely on
                     // efficient cursor-positioned redraws (claude flickers/duplicates banner without this).
-                    if (claudePath != null && claudePath.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
+                    if (cliPath != null && cliPath.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
                     {
-                        var direct = ResolveCmdShimTarget(claudePath);
-                        if (direct != null) claudePath = direct;
+                        var direct = ResolveCmdShimTarget(cliPath);
+                        if (direct != null) cliPath = direct;
                     }
                 }
             }
             catch { }
 
             var loginPath = Environment.GetEnvironmentVariable("PATH");
-            return (claudePath, loginPath);
+            return (cliPath, loginPath);
         }
 
         static string? ResolveCmdShimTarget(string cmdPath)

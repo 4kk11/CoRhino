@@ -151,7 +151,7 @@ claude に固定させる）を持ち、タブ⇄トランスクリプトの対�
 プロセス全体の static `LiveSessionIds`**（doc ごとの複数パネルは macOS では1プロセス内に共存する。同じ
 トランスクリプトに2つの claude が付くと履歴が混線するため、resume 判定はパネル横断でなければならない）。
 登録/解除は `RegisterTab`/`UnregisterTab` に一元化（全パネルの変異が同一 UI スレッドなのでロック不要）。
-レイヤ接頭辞は `LayerFor(sessionId)`（`s-<先頭8桁>`）で**セッションから決定的に導出**し、spawn 時に
+レイヤ接頭辞は `ClaudeCli.LayerTokenFor(sessionId)`（`s-<先頭8桁>`）で**セッションから決定的に導出**し、spawn 時に
 `--append-system-prompt` で注入する（→ 5章 / D11）。`_tabs` は UI スレッド
 （メッセージハンドラと AsyncInvoke 済みの PTY コールバック）からのみ触るのでロック不要。
 
@@ -175,7 +175,7 @@ Rhino がドキュメントごとに `new CoRhinoPanel(uint documentSerialNumber
 
 | メソッド | 役割 | 参照 |
 |---|---|---|
-| `SpawnTab` | 次の agentId を採番 → 新規セッション ID 採番 → `AgentTab` 登録 → UI へ `onTabCreated` → 背景で claude 起動 | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
+| `SpawnTab` | 次の agentId を採番 → 新規セッション ID 採番 → `AgentTab` 登録 → UI へ `onTabCreated` → 背景で CLI 起動 | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `ResumeSession` | Sessions Drawer からの再開。allowlist（`SessionsCatalog.TryGetKnown`）＋ jsonl 存在＋非実行中（`LiveSessionIds`）を検証し、`Resume=true` の新規タブとして spawn | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `RenameSession` | 名前を `session-names.json` に永続化（空で削除）→ live タブなら `onTabLabel` → 一覧再送 | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `DeleteSession` | トランスクリプト（jsonl + `<id>/` subagents dir）と名前を削除。allowlist＋非実行中のみ | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
@@ -183,7 +183,7 @@ Rhino がドキュメントごとに `new CoRhinoPanel(uint documentSerialNumber
 | `StartSession(tab)` | CLI 解決 → そのエージェントの session dir 準備 → claude を PTY で spawn（後述） | [:207](../src/Panel/CoRhinoPanel.cs#L207) |
 | `EnsureHostMcpStarted` | `RhinoApp.Idle` ワンショットで env var セット + `_-MCPSpawn` 発火（全タブ共有・1回） | [:266](../src/Panel/CoRhinoPanel.cs#L266) |
 | `OnDocChangedRestartHost` | doc 切替/新規時、導入済みならホスト再起動 | [:303](../src/Panel/CoRhinoPanel.cs#L303) |
-| `OnMessageReceived` | WebView → C# の JSON を捌く（ready/createTab/closeTab/stdin/resize/listSkills/openSkill/reloadSkills/listSessions/resumeSession/renameSession/debug、agentId で振り分け） | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
+| `OnMessageReceived` | WebView → C# の JSON を捌く（ready/createTab/closeTab/stdin/resize/listSkills/openSkill/reloadSkills/listSessions/resumeSession/renameSession/deleteSession/debug、agentId で振り分け） | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `OnPtyData(tab,…)` | PTY 出力を UTF-8 化し該当タブへ（未 ready ならそのタブの `Pending` にキュー）。id 再利用に備え `ReferenceEquals` で stale を破棄 | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `OnSessionExited(tab,…)` | claude 終了 → `RemoveTab(tab)` を UI スレッドで呼ぶ | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `RemoveTab(tab)` | **タブ撤去の単一経路**（exit / ×ボタン / 起動失敗 共通）。id→別インスタンスなら no-op。Session Dispose + `onTabClosed` + 空なら `ClosePanel` | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
@@ -191,7 +191,10 @@ Rhino がドキュメントごとに `new CoRhinoPanel(uint documentSerialNumber
 | `EnsureSessionAlive` | 全タブ死亡（`IsRunning`/`Starting` とも false）なら全 Dispose → `onTabsReset` → agent-1 を再 spawn | [CoRhinoPanel.cs](../src/Panel/CoRhinoPanel.cs) |
 | `Dispose` | doc イベント解除 + 全タブ `Session.Dispose()` | [:381](../src/Panel/CoRhinoPanel.cs#L381) |
 
-#### claude の起動引数（`StartSession`）
+#### claude の起動引数（`ClaudeCli.BuildArgs` → `StartSession` が PTY spawn）
+
+引数の組み立ては CLI アダプタ（`src/Cli/ClaudeCli.cs` → 2.7b）の仕事。`StartSession` は CLI 非依存の
+PTY 配線（解決→SpawnContext→BuildArgs→spawn→フォールバック）だけを持つ。
 
 ```
 claude --strict-mcp-config --mcp-config <~/.corhino/runtime/mcp-<port>-<agentId>.json>
@@ -211,7 +214,7 @@ claude --strict-mcp-config --mcp-config <~/.corhino/runtime/mcp-<port>-<agentId>
 - `--session-id <GUID>` … 新規タブは spawn 時に C# が採番した ID を claude に固定させる。これでタブ⇄
   トランスクリプト（`~/.claude/projects/<cwd-slug>/<id>.jsonl`）の対応をパース無しで把握できる（→ D10）。
   resume タブは `--resume <id>`（`--fork-session` は付けない＝同じ jsonl が伸び続ける）。
-- `--append-system-prompt` … セッション紐付けの担当レイヤ（`LayerFor(sessionId)` = `s-<先頭8桁>`）を注入する。
+- `--append-system-prompt` … セッション紐付けの担当レイヤ（`ClaudeCli.LayerTokenFor(sessionId)` = `s-<先頭8桁>`）を注入する。
   共有 CLAUDE.md はルールだけを持ち、セッション固有の値はここで届ける（→ D11）。決定的導出なので
   resume でも同じレイヤが復元される。
 - cwd は `Workspace.EnsureWorkspace()` が返す**全セッション共有**の `~/.corhino/workspace/`。
@@ -335,14 +338,35 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
 
 ### 2.7 CLI 解決 — `CliResolver.cs`
 
-**責務**: `claude` 実行ファイルの絶対パスと、ログインシェルの `PATH` を解決する。
+**責務**: エージェント CLI バイナリ（`Resolve(binaryName)`、`claude` / `codex` …）の絶対パスと、
+ログインシェルの `PATH` を解決する。**毎回解決**（キャッシュなし）— spawn は常に現在の PATH 状態を見るので、
+Rhino 起動中にインストールされた CLI も次の spawn から拾える。
 
-- Unix（[:21](../src/Pty/CliResolver.cs#L21)）: `bash -lc "command -v claude || which claude"` と `bash -lc 'echo -n "$PATH"'`。
+- Unix: `bash -lc "command -v <bin> || which <bin>"` と `bash -lc 'echo -n "$PATH"'`。
   **ログインシェル経由**なのは、Rhino の PATH には nvm/homebrew 等のパスが入っていないことが多いから。
-- Windows（[:28](../src/Pty/CliResolver.cs#L28)）: `where.exe claude` の結果から **`.exe` を最優先**（`.cmd` → `.bat` → 先頭）。
-  - `.cmd` shim を引いたら、その中身から実体 `.exe` を正規表現で抽出して差し替える（`ResolveCmdShimTarget`, [:79](../src/Pty/CliResolver.cs#L79)）。
+  binaryName はシェルコマンドに埋め込まれるため、**アダプタ定数（`IAgentCli.BinaryName`）以外を渡さない**こと。
+- Windows: `where.exe <bin>` の結果から **`.exe` を最優先**（`.cmd` → `.bat` → 先頭）。
+  - `.cmd` shim を引いたら、その中身から実体 `.exe` を正規表現で抽出して差し替える（`ResolveCmdShimTarget`）。
   - **なぜ**: `cmd.exe` を噛ませると ConPTY の ANSI シーケンス透過が乱れ、Ink ベースの claude TUI が
     チラつく／バナーが重複する。直接 `.exe` を起動すればこれを避けられる。
+
+### 2.7b CLI アダプタ層 — `src/Cli/`
+
+**責務**: CLI ごとの差分（起動引数・MCP 隔離・セッション同定・レイヤ指示注入・機能可否）を
+`IAgentCli` 実装に閉じ込める。PTY 配線・タブ管理・WebView 中継は CLI 非依存なので `CoRhinoPanel` に残る。
+設計は [`plans/codex-cli-support-design.md`](plans/codex-cli-support-design.md)（D12）。
+
+- `IAgentCli.cs` … アダプタ contract + `SpawnContext` record（spawn 時に UI スレッドで組んでアダプタへ渡す。
+  アダプタはパネル状態に触らない）。`BuildArgs` / `LayerTokenFor` / `DiscoverSessionIdAsync` /
+  `SupportsSkillsDrawer` / `BinaryName` / `DisplayName`。
+- `ClaudeCli.cs` … 旧 `StartSession` の claude 固有部を移設（`--strict-mcp-config` + `--mcp-config` /
+  `--plugin-dir` ×2 / `--session-id`|`--resume` / `--append-system-prompt`。順序も旧実装と同一）。
+  レイヤは sessionId から決定的導出（旧 `LayerFor` と同じ `s-<先頭8桁>`）。
+- `AgentCliRegistry.cs` … Kind → シングルトン instance（現状 Claude のみ登録）。アダプタはステートレスで、
+  spawn ごとの状態は `SpawnContext` で運ぶ。
+- 各 `AgentTab` は自分の `Cli`（アダプタ参照）を持ち、`StartSession` は
+  「解決（`CliResolver.Resolve(cli.BinaryName)`）→ `SpawnContext` 構築 → `cli.BuildArgs(ctx)` → PTY spawn」
+  という CLI 非依存の手順だけを持つ。
 
 ### 2.8 ログ — `Log.cs`
 
@@ -383,7 +407,7 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
   `listSessions` / `resumeSession{sessionId}` / `renameSession{sessionId,name}` /
   `deleteSession{sessionId}` / `debug`。
 - **受信窓口** `window.CoRhinoPanel`: C# 側が `ExecuteScriptAsync` で呼ぶ。
-  - `onTabCreated({agentId, sessionId, label})` → タブ＋xterm を生成しアクティブ化
+  - `onTabCreated({agentId, sessionId, label, customName})` → タブ＋xterm を生成しアクティブ化
   - `onPtyData(agentId, text)` → 該当タブの `term.write(text)`
   - `onSessionRestart(agentId)` → 該当タブの `term.reset()`
   - `onTabClosed(agentId)` → そのタブを除去
@@ -461,7 +485,7 @@ CoRhino は内部に4つの通信境界を持つ。バグはたいていこの�
 | `type` | ペイロード | C# の処理 |
 |---|---|---|
 | `ready` | — | `_webReady=true` → 各タブを `onTabCreated` で announce → `FlushPending` |
-| `createTab` | — | `SpawnTab()`（次の agentId を採番し claude 起動） |
+| `createTab` | — | `SpawnTab()`（次の agentId を採番し起動） |
 | `closeTab` | `agentId` | `CloseTab(agentId)`（その PtySession を Dispose） |
 | `stdin` | `agentId, data` | UTF-8 で該当タブの `Session.Write()`（PTY へ） |
 | `resize` | `agentId, cols, rows` | 該当タブの `Session.Resize(cols, rows)` |
@@ -478,7 +502,7 @@ CoRhino は内部に4つの通信境界を持つ。バグはたいていこの�
 
 | 呼び出し | UI の処理 |
 |---|---|
-| `onTabCreated({agentId, sessionId, label})` | タブ＋xterm を生成しアクティブ化。label は初期タブ名（手動名 > 自動タイトル > agentId） |
+| `onTabCreated({agentId, sessionId, label, customName})` | タブ＋xterm を生成しアクティブ化。label は初期タブ名（手動名 > 自動タイトル > agentId） |
 | `onPtyData(agentId, text)` | 該当タブの `term.write(text)` |
 | `onSessionRestart(agentId)` | 該当タブの `term.reset()`（再起動時に画面クリア） |
 | `onTabClosed(agentId)` | そのタブを除去 |
@@ -698,11 +722,11 @@ RhinoMCP ホストは**ドキュメント単位**。`EndOpenDocument` / `NewDocu
 | **D4** | ホスト MCP はパネルが自動起動 | ユーザーにコマンドを打たせない | `EnsureHostMcpStarted`（_-MCPSpawn + env var） |
 | **D5** | claude の cwd は固定（アクティブ `.3dm` に追従しない） | 設定を一元化し挙動を読めるようにする | `Workspace.EnsureSession` が返す sessions dir |
 | **D6** | ホスト MCP ポートを per-instance 化（D5 の固定を改訂。cwd の per-instance 化は D11 で共有に再改訂） | 複数 Rhino での混線を防ぐ | `ResolveFreePort` / `_hostPort` |
-| **D7** | 1 doc に複数 claude（タブ並列）。同一ポート共有＋レイヤ・ソフト分離＋ `X-CoRhino-Agent` ヘッダ（レイヤの割当単位は D11 でセッション紐付けに改訂） | ホストはステートレス多重接続可。並列独立作業を最小改修で。論理衝突はレイヤで回避、強制は将来 | `_tabs` / `LayerFor` / `.mcp.json` headers / CLAUDE.md のレイヤ節 |
+| **D7** | 1 doc に複数 claude（タブ並列）。同一ポート共有＋レイヤ・ソフト分離＋ `X-CoRhino-Agent` ヘッダ（レイヤの割当単位は D11 でセッション紐付けに改訂） | ホストはステートレス多重接続可。並列独立作業を最小改修で。論理衝突はレイヤで回避、強制は将来 | `_tabs` / `IAgentCli.LayerTokenFor` / `.mcp.json` headers / CLAUDE.md のレイヤ節 |
 | **D8** | ユーザー自作スキルは `~/.corhino/skills` の local plugin として全セッションへ注入。保存を担う `save-rhino-skill` メタスキルは同梱 cc-plugin で配布 | ユーザーが会話から動的にスキルを蓄積できる。`~/.claude/skills` に混ぜない（D3 と同じ隔離姿勢）。Rhino ノウハウは持たないが、CoRhino 自身の規約を教えるオンボーディングスキルは持つ（D2 の精緻化 → 1.2） | `Workspace.EnsureUserSkillsPlugin` / `cc-plugin/` / `--plugin-dir` ×2（CoRhinoPanel.cs） |
 | **D9** | スキル一覧はパネル右のドロワー（⚡）。ロード状態は mtime vs per-tab タイムスタンプの近似 | claude 内部のロード状態は外から読めない。誤検知は ⟳ で収束する方向にのみ倒す | `SkillsCatalog.cs` / `skills-drawer.ts` / watcher（CoRhinoPanel.cs） |
 | **D10** | セッション管理: spawn 時に `--session-id` で ID を固定し、Sessions Drawer（🕘）から `--resume` で再開。命名は `session-names.json`（sessionId キー） | claude の履歴は cwd キーで `--resume` は同 cwd 限定——ポート入り cwd（D6）がドリフトで履歴を分断していた。ID 固定でタブ⇄トランスクリプト対応をパース無しで把握 | `--session-id`/`--resume`（StartSession）/ `SessionsCatalog.cs` / `SessionNames.cs` / `sessions-drawer.ts` |
-| **D11** | cwd を全セッション共有の `~/.corhino/workspace/` に一本化（D10 のスロット dir 方式と D6/D7 の dir 分離を即日改訂）。`.mcp.json` は `runtime/` へ、担当レイヤはセッション紐付け（`s-<id先頭8桁>`）を `--append-system-prompt` で注入 | スロット方式は「スロット使用中」等の占有概念とプロセス内外の衝突対策を生んだ。分離の実体は cwd ではなくセッション ID と `.mcp.json` の中身なので、cwd を1つにすれば resume は常時可能になり占有概念ごと消せる | `Workspace.EnsureWorkspace`/`EnsureAgentMcpConfig` / `LayerFor`/`LiveSessionIds`（CoRhinoPanel.cs） |
+| **D11** | cwd を全セッション共有の `~/.corhino/workspace/` に一本化（D10 のスロット dir 方式と D6/D7 の dir 分離を即日改訂）。`.mcp.json` は `runtime/` へ、担当レイヤはセッション紐付け（`s-<id先頭8桁>`）を `--append-system-prompt` で注入 | スロット方式は「スロット使用中」等の占有概念とプロセス内外の衝突対策を生んだ。分離の実体は cwd ではなくセッション ID と `.mcp.json` の中身なので、cwd を1つにすれば resume は常時可能になり占有概念ごと消せる | `Workspace.EnsureWorkspace`/`EnsureAgentMcpConfig` / `IAgentCli.LayerTokenFor`/`LiveSessionIds` |
 
 **MCP ホスト起動の落とし穴（バグ B3）**: `_-MCPStart <port>` は `GetInteger` で対話的にポートを取るため、
 runscript からポートを渡せず「不明なコマンド: <port>」が漏れてホストが上がらなかった。RhinoMCP 側はこの racy な
