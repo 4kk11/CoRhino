@@ -567,4 +567,13 @@ UI の ready → fit → resize が届く頃には spawn が完了している�
 「PTY のサイズはセッション自身の関心事」であり、呼び出し側全員（fallback shell 含む）に
 同じ配線を強いないため。
 
+**Windows も同罪**: レース自体はプラットフォーム非依存（`ResolveWindows` も `where` の子プロセス起動で
+spawn 前に時間がかかる）で、修正は共通コード（PtySession）なので両 OS に効く。ただし Porta.Pty の
+`Resize` は**失敗時に例外を投げる**（Windows: `ResizePseudoConsole` 失敗 → `InvalidOperationException`、
+Unix: ioctl 失敗も同様）。UI からの resize 経路は `OnMessageReceived` の catch が受けるが、
+spawn 直後の適用は `LaunchSessionInBackground` の catch-all（＝失敗時 RemoveTab）に落ちるため、
+mid-spawn の Dispose 競合や一過性の ConPTY 失敗で**正常起動したタブごと削除**しかねない。
+適用は best-effort として try/catch + ログで握る形にした。
+
 **検証**: `dotnet build` 0 警告 0 エラー。実機確認（タブ追加直後に崩れないこと）は次回 Rhino 起動時。
+Windows 実機（ConPTY での同挙動）も未確認・要実施。

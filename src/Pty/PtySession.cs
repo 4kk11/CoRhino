@@ -85,10 +85,17 @@ namespace CoRhino.Pty
             Log.Write($"[Claude/PTY] SpawnAsync returned. pid={connection.Pid}");
             // Apply a size that arrived mid-spawn (Resize() saw _connection == null
             // then and could only record it). Redundant when nothing changed —
-            // the PTY treats a same-size resize as a no-op.
+            // the PTY treats a same-size resize as a no-op. Best-effort: Porta.Pty's
+            // Resize throws on failure (ConPTY ResizePseudoConsole / ioctl), and a
+            // Dispose racing this apply can hand it a dead handle — neither may
+            // bubble into the caller's catch, which would tear down a healthy tab.
             lock (_sizeLock)
             {
-                if (_hasLastSize) connection.Resize(_lastCols, _lastRows);
+                if (_hasLastSize)
+                {
+                    try { connection.Resize(_lastCols, _lastRows); }
+                    catch (Exception ex) { Log.Write($"[Claude/PTY] Post-spawn resize failed: {ex.Message}"); }
+                }
             }
             connection.ProcessExited += (_, e) =>
             {
