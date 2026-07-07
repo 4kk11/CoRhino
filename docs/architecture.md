@@ -284,7 +284,11 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
 - `ResolveFreePort(count=100)`: `BasePort=10500` から順に `TcpListener` で bind 試行し、最初に空いたポートを返す。
   100 個全滅なら 10500 を返す（その場合は後段の bind エラーで顕在化）。**ポートはパネル単位**（1パネル内の
   全エージェントは同じポートを共有する）。
-- `EnsureWorkspace()`: 共有 dir を作成し、`CLAUDE.md` と `AGENTS.md`（codex 用・同一テンプレ）を**存在しなければ** seed（以後ユーザー
+- `EnsureWorkspace()`: 共有 dir を作成し、`CLAUDE.md` と `AGENTS.md`（codex 用・同一テンプレ）を**存在しなければ** seed。
+  あわせて `EnsureCodexSkillsLinks` が symlink を 2 本、無ければ張る（codex のプロジェクトスキル発見規約 =
+  claude の `--plugin-dir` の codex 側対）: `.agents/skills` → `~/.corhino/skills/skills`（ユーザー）、
+  `.codex/skills` → `<plugin dir>/cc-plugin/skills`（同梱）。失敗（Windows の権限等）はリンクごとに一度だけ
+  ログし codex タブが該当スキル無しで動くだけ。ガイドは（以後ユーザー
   所有、上書きしない）。テンプレは並列エージェントのルールを持つが、担当レイヤの**値**は持たない——
   それはセッション固有なので `--append-system-prompt` が届ける（→ 2.3 / D11）。戻り値 = claude の cwd。
   テンプレ（CLAUDE.md・skills README/manifest も同様）は **seed 時点の Rhino 言語**（`L10n`）で書かれ、
@@ -370,7 +374,9 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
   レイヤは sessionId から決定的導出（旧 `LayerFor` と同じ `s-<先頭8桁>`）。
 - `CodexCli.cs` … codex アダプタ。隔離は `--disable plugins` + ユーザー config.toml の実在サーバ
   `enabled=false` + rhino 追加の合成（`-c 'mcp_servers={...}'` はマージであり全置換不可）。レイヤ指示は
-  `-c developer_instructions`（追記・TUI 不可視）。セッション ID は spawn 後に rollout（1 行目
+  `-c developer_instructions`（追記・TUI 不可視）。スキルは workspace の symlink 2 本
+  （`.agents/skills`=ユーザー、`.codex/skills`=同梱）経由（`SupportsSkillsReload=false`: in-session reload 無し /
+  `LoadsSkillsViaWorkspaceMount=true`: リンク健全性を検証して列挙）。セッション ID は spawn 後に rollout（1 行目
   `session_meta.cwd` == workspace）を突合して発見 — 帰属は panel の spawn ゲート直列化と burn mode で保証
   （詳細は [`plans/codex-cli-support-design.md`](plans/codex-cli-support-design.md) 5.2 / D13–D15）。
 - `AgentCliRegistry.cs` … `AgentCliKind` → シングルトン instance。アダプタはステートレスで、
@@ -502,9 +508,9 @@ CoRhino は内部に4つの通信境界を持つ。バグはたいていこの�
 | `closeTab` | `agentId` | `CloseTab(agentId)`（その PtySession を Dispose） |
 | `stdin` | `agentId, data` | UTF-8 で該当タブの `Session.Write()`（PTY へ） |
 | `resize` | `agentId, cols, rows` | 該当タブの `Session.Resize(cols, rows)` |
-| `listSkills` | `agentId` | `SkillsCatalog.Scan`（そのタブの `SkillsLoadedAtUtc` 視点）→ `onSkillsList` |
+| `listSkills` | `agentId` | `SkillsCatalog.Scan`（そのタブの `SkillsLoadedAtUtc` 視点）→ mount 経由タブ（codex）はソースごとにリンク健全性を検証 → `onSkillsList` |
 | `openSkill` | `path` | `IsKnownSkillPath` 検証 → `Process.Start`（UseShellExecute）で SKILL.md を開く |
-| `reloadSkills` | `agentId` | 該当タブの PTY へ `/plugin reload-plugins` 注入 → `SkillsLoadedAtUtc=now` → `onSkillsList` 再送 |
+| `reloadSkills` | `agentId` | `SupportsSkillsReload` なタブ（claude）のみ: PTY へ `/plugin reload-plugins` 注入 → `SkillsLoadedAtUtc=now` → `onSkillsList` 再送。codex は UI が ⟳ 自体を隠す |
 | `listSessions` | — | `RequestSessionsScan()`（BG スキャン → `onSessionsList`） |
 | `resumeSession` | `sessionId` | 両カタログ横断の allowlist ＋ transcript 存在 ＋ 非実行中を検証 → 該当 CLI の新規タブとして resume spawn |
 | `renameSession` | `sessionId, name` | `SessionNames.Set`（空で削除）→ live タブへ `onTabLabel` → 一覧再送 |

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -101,7 +102,99 @@ namespace CoRhino.Panel
                 }
             }
 
+            EnsureCodexSkillsLinks();
+
             return root;
+        }
+
+        // Serializes the check-then-create below (EnsureWorkspace runs per spawn
+        // on background threads — two concurrent spawns must not both try to
+        // create a link) and owns the log-once failure set.
+        static readonly object CodexSkillsLinkGate = new();
+        static readonly HashSet<string> FailedLinks = new(StringComparer.Ordinal);
+
+        /// <summary>&lt;workspace&gt;/.agents/skills — codex project-skills root, linked onto the user store.</summary>
+        static string CodexUserSkillsLinkPath => Path.Combine(WorkspaceRoot, ".agents", "skills");
+
+        /// <summary>&lt;workspace&gt;/.codex/skills — codex's second project-skills root, linked onto the bundled cc-plugin skills.</summary>
+        static string CodexBundledSkillsLinkPath => Path.Combine(WorkspaceRoot, ".codex", "skills");
+
+        /// <summary>The bundled cc-plugin's skills dir next to the assembly (what claude mounts via --plugin-dir).</summary>
+        static string BundledSkillsDir => Path.Combine(
+            Path.GetDirectoryName(typeof(Workspace).Assembly.Location) ?? string.Empty,
+            "cc-plugin", "skills");
+
+        /// <summary>
+        /// The codex side of the skills wiring. Codex has no --plugin-dir
+        /// equivalent, but it discovers project skills at BOTH
+        /// &lt;cwd&gt;/.agents/skills and &lt;cwd&gt;/.codex/skills (spike-verified,
+        /// 0.142.5, symlinks included) — and the cwd is CoRhino's own workspace.
+        /// Two symlinks put the same skills claude mounts into codex sessions
+        /// without touching ~/.codex: the user store on the .agents root, the
+        /// bundled cc-plugin skills on the .codex root. Existing entries — the
+        /// user's own dirs or links — are left alone.
+        /// </summary>
+        static void EnsureCodexSkillsLinks()
+        {
+            EnsureLink(CodexUserSkillsLinkPath, Path.Combine(EnsureUserSkillsPlugin(), "skills"), "codex user skills");
+            // Parity with claude's bundled --plugin-dir: skip silently when a
+            // stripped install lacks cc-plugin.
+            if (Directory.Exists(BundledSkillsDir))
+                EnsureLink(CodexBundledSkillsLinkPath, BundledSkillsDir, "codex bundled skills");
+        }
+
+        static void EnsureLink(string link, string target, string label)
+        {
+            lock (CodexSkillsLinkGate)
+            {
+                try
+                {
+                    if (Directory.Exists(link) || File.Exists(link)) return; // present (or user-owned) — done
+                    Directory.CreateDirectory(Path.GetDirectoryName(link)!);
+                    Directory.CreateSymbolicLink(link, target);
+                    Log.Write($"[CoRhino] Linked {link} -> {target} ({label}).");
+                }
+                catch (Exception ex)
+                {
+                    // The entry appearing between check and create (another Rhino
+                    // process, the user) is success, not failure.
+                    if (Directory.Exists(link) || File.Exists(link)) return;
+                    if (!FailedLinks.Add(link)) return; // log once per link
+                    // Codex tabs just run without these skills; claude is unaffected.
+                    // Windows needs Developer Mode (or elevation) for symlinks — the
+                    // usual cause here.
+                    Log.Write($"[CoRhino] {label} link failed (codex tabs run without them): {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>Whether codex sessions actually mount the user skill store (see IsOurLink).</summary>
+        public static bool CodexUserSkillsLinkActive() =>
+            IsOurLink(CodexUserSkillsLinkPath, Path.Combine(UserSkillsRoot, "skills"));
+
+        /// <summary>Whether codex sessions actually mount the bundled cc-plugin skills (see IsOurLink).</summary>
+        public static bool CodexBundledSkillsLinkActive() =>
+            IsOurLink(CodexBundledSkillsLinkPath, BundledSkillsDir);
+
+        // True only when the entry is OUR symlink onto the expected target —
+        // i.e. codex sessions really load what the drawer would list. False
+        // when creation failed, or when the user replaced the entry with their
+        // own dir/link (codex then loads THAT, which CoRhino doesn't manage).
+        static bool IsOurLink(string link, string expectedTarget)
+        {
+            try
+            {
+                var info = new DirectoryInfo(link);
+                if (!info.Exists || info.LinkTarget == null) return false;
+                var target = Path.TrimEndingDirectorySeparator(Path.GetFullPath(info.LinkTarget));
+                var expected = Path.TrimEndingDirectorySeparator(Path.GetFullPath(expectedTarget));
+                return string.Equals(target, expected,
+                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>

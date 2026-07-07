@@ -702,8 +702,6 @@ namespace CoRhino.Panel
                         break;
 
                     case "listSkills":
-                        // Codex tabs have no skill loading; the UI disables ⚡ for
-                        // them — this guard is defense in depth.
                         if (TryGetTab(root, out var listTab) && listTab!.Cli.SupportsSkillsDrawer)
                             SendSkillsList(listTab!);
                         break;
@@ -718,7 +716,9 @@ namespace CoRhino.Panel
                         // load timestamp, and re-send the list so ⚠ dots clear. A
                         // plain UI-side stdin write couldn't advance the timestamp —
                         // that's why this is its own message.
-                        if (TryGetTab(root, out var reloadTab) && reloadTab!.Cli.SupportsSkillsDrawer &&
+                        // Only CLIs with an in-session reload path (claude). The UI
+                        // hides ⟳ for the rest — this guard is defense in depth.
+                        if (TryGetTab(root, out var reloadTab) && reloadTab!.Cli.SupportsSkillsReload &&
                             reloadTab.Session.IsRunning)
                         {
                             reloadTab.Session.Write(Encoding.UTF8.GetBytes("/plugin reload-plugins\r"));
@@ -845,7 +845,18 @@ namespace CoRhino.Panel
         void SendSkillsList(AgentTab tab)
         {
             if (!_webReady) return;
-            var json = SkillsCatalog.ToJson(tab.AgentId, SkillsCatalog.Scan(tab.SkillsLoadedAtUtc));
+            IReadOnlyList<SkillInfo> skills = SkillsCatalog.Scan(tab.SkillsLoadedAtUtc);
+            // The drawer shows what THIS tab's session actually has: codex mounts
+            // both skill sources via workspace symlinks, and each source is
+            // listed only while its link really is ours and in place (creation
+            // can fail, and the user may replace an entry).
+            if (tab.Cli.LoadsSkillsViaWorkspaceMount)
+            {
+                var userOk = Workspace.CodexUserSkillsLinkActive();
+                var bundledOk = Workspace.CodexBundledSkillsLinkActive();
+                skills = skills.Where(s => s.Source == "user" ? userOk : bundledOk).ToList();
+            }
+            var json = SkillsCatalog.ToJson(tab.AgentId, skills);
             _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onSkillsList({json})");
         }
 

@@ -19,6 +19,8 @@ namespace CoRhino.Cli
         public string DisplayName => "Claude Code";
         public string BinaryName => "claude";
         public bool SupportsSkillsDrawer => true;
+        public bool SupportsSkillsReload => true;          // /plugin reload-plugins
+        public bool LoadsSkillsViaWorkspaceMount => false; // --plugin-dir ×2 (user + cc-plugin)
 
         // Derived deterministically from the sessionId so a resumed session gets
         // the SAME layer it created objects in — no {sessionId → layer} index to

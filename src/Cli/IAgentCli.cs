@@ -72,5 +72,21 @@ namespace CoRhino.Cli
 
         /// <summary>Whether the Skills Drawer works for this CLI's tabs.</summary>
         bool SupportsSkillsDrawer { get; }
+
+        /// <summary>
+        /// Whether a running session can re-load skills in place (claude's
+        /// /plugin reload-plugins). False → skills changes reach new tabs only,
+        /// and the drawer hides its ⟳.
+        /// </summary>
+        bool SupportsSkillsReload { get; }
+
+        /// <summary>
+        /// Whether skills reach this CLI's sessions through the workspace
+        /// symlinks (codex: .agents/skills + .codex/skills) instead of launch
+        /// flags (claude: --plugin-dir). Mounted skills are only listed while
+        /// their link is verifiably in place — the drawer must not show skills
+        /// the session doesn't actually have (see SendSkillsList).
+        /// </summary>
+        bool LoadsSkillsViaWorkspaceMount { get; }
     }
 }

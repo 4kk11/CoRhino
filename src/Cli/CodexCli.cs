@@ -29,7 +29,14 @@ namespace CoRhino.Cli
         public AgentCliKind Kind => AgentCliKind.Codex;
         public string DisplayName => "Codex";
         public string BinaryName => "codex";
-        public bool SupportsSkillsDrawer => false;
+        // Skills reach codex through the workspace symlinks (see
+        // Workspace.EnsureCodexSkillsLinks): user store on .agents/skills,
+        // bundled cc-plugin on .codex/skills — the same files claude loads via
+        // --plugin-dir. No in-session reload though: skills are injected once
+        // at session start, so changes land in new tabs only.
+        public bool SupportsSkillsDrawer => true;
+        public bool SupportsSkillsReload => false;
+        public bool LoadsSkillsViaWorkspaceMount => true;
 
         // Fresh spawns (sessionId null) mint a token — the id to derive from
         // doesn't exist yet; the {id → token} pair is persisted by the panel

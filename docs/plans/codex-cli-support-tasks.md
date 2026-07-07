@@ -152,6 +152,45 @@ localhost:10590 に立て、`codex exec`（codex-cli 0.142.5）で各構成を�
 
 ---
 
+## Phase 3b: codex スキル対応（調査により追加。2026-07-07 実装）✅ コード完了（実機スモークのみ残）
+
+前提調査（サブエージェント 2 系統: ローカル実機 0.142.5 / 公式 docs + ソース rust-v0.142.5）:
+`<cwd>/.agents/skills/*/SKILL.md` の配置規約でセッション（ディレクトリ）限定注入が可能、symlink 経由
+ロード実測 OK、SKILL.md は claude 互換、`--disable plugins` と干渉なし、in-session reload なし、
+bundled cc-plugin の mount 手段なし（詳細は設計書 5.8）。
+
+- [x] **3b-1**: `Workspace.EnsureCodexSkillsLink` — `<workspace>/.agents/skills` → `~/.corhino/skills/skills`
+  の symlink を無ければ seed（既存エントリはユーザー所有として不触。失敗は一度だけログ・claude 無影響）
+- [x] **3b-2**: `IAgentCli` に `SupportsSkillsReload` / `LoadsBundledSkills` を追加
+  （claude: true/true、codex: false/false。`SupportsSkillsDrawer` は codex も true に）
+- [x] **3b-3**: C# — `reloadSkills` ガードを `SupportsSkillsReload` に変更、`SendSkillsList` が
+  `LoadsBundledSkills=false` のタブへ bundled スキルを送らない（セッションに無いものは見せない）
+- [x] **3b-4**: UI — ⚡ の disabled 機構を撤去（両 CLI 有効）。codex タブでは ⟳ 非表示
+  （`getActiveCli` コールバック）、⚠ ヒント文言を「新しいタブから有効」に切替
+- [x] **3b-7（追加）**: 同梱 cc-plugin スキルも codex へ mount
+  - 実機フィードバック「save-rhino-skill がない」を受け追加。codex の第二プロジェクトルート
+    `<cwd>/.codex/skills` に `<plugin dir>/cc-plugin/skills` への symlink を seed（`EnsureCodexSkillsLinks`）
+  - capability を `LoadsBundledSkills` → `LoadsSkillsViaWorkspaceMount` に差し替え、ドロワーは
+    ソースごとのリンク健全性（`Codex{User,Bundled}SkillsLinkActive`）で列挙を制御
+  - SKILL.md 本文を CLI 中立化（reload 手順を claude 限定と明記）
+  - E2E 実測: workspace cwd の `--ephemeral` exec で `corhino:save-rhino-skill` と
+    `my-rhino-skills:*`（ユーザースキル）の両方がロードされることを確認（plugin 名前空間付き。
+    codex は symlink 先の `.claude-plugin/plugin.json` も認識）。当初「出ない」ように見えたのは
+    モデルの全列挙が名前空間付きスキルを省略していたためで、ロード自体は成功していた
+- [ ] **3b-5**: 実機スモーク — codex タブで ⚡ が開き user + 同梱スキルが列挙される・スキルが実際に発動する・
+  claude タブは従来どおり（⟳ あり）・`~/.codex` が無変更・symlink 2 本が workspace に生成される
+
+### 📋 Codex レビュー
+- [x] **3b-6**: 実施済み（2 ラウンド）
+  - R1 指摘 1: symlink 不成立時（作成失敗・ユーザー差し替え）でも drawer が user スキルを列挙し
+    「セッションに無いものを見せる」→ `Workspace.CodexSkillsLinkActive()`（LinkTarget がストアを
+    指すことを検証）が true のときだけ列挙、false は空に
+  - R1 指摘 2: 並列 spawn の check/create 競合で偽の失敗ログ → static lock で直列化 +
+    create 例外時はエントリ再確認（現れていれば成功扱い）
+  - R2: 両修正の解消を確認、LGTM
+
+---
+
 ## Phase 4: ドキュメント追従 + 実機確認チェックリスト
 
 - [ ] **4-1**: `docs/architecture.md` 更新（`Cli/` 章、プロトコル表、D12–D16 参照）

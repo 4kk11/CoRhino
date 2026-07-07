@@ -28,7 +28,7 @@ Rhino プロセス
 │        └─ タブごと (= エージェント) に claude / codex を並列起動（＋メニューで選択）
 │             ├─ 共有ワークスペース ~/.corhino/workspace/ を cwd に (CLAUDE.md / AGENTS.md)
 │             ├─ claude: ~/.corhino/runtime/ のタブ専用 .mcp.json / codex: -c オーバーライド注入
-│             ├─ claude のみ: ~/.corhino/skills/ + 同梱 cc-plugin を --plugin-dir でロード
+│             ├─ スキル: claude は --plugin-dir、codex は workspace/.agents/skills (symlink) でロード
 │             └─ 全タブが同じ http://localhost:<port>/ に接続 (同じ doc を操作)
 └── Rhino-MCP-Platform プラグイン (.rhp)
      └── http://localhost:<port>/ で MCP ホストを提供
@@ -52,8 +52,12 @@ Rhino プロセス
   書き方は seed される `~/.corhino/skills/README.md` を参照）。全パネル・全タブに載り、
   実行中セッションへの反映は `/plugin reload-plugins`。
 - **スキル一覧ドロワー**: タブバー右端の ⚡ で、溜まったスキルの一覧（自作/同梱バッジ・説明）を
-  ターミナル横に表示する（claude タブのみ。codex タブでは無効化される）。保存直後のスキルはライブで現れ、未反映なら ⚠ が付き、ヘッダの ⟳ 一発で
-  アクティブなセッションに反映できる。「エディタで開く」で SKILL.md を直接編集。
+  ターミナル横に表示する。保存直後のスキルはライブで現れ、未反映なら ⚠ が付く。「エディタで開く」で
+  SKILL.md を直接編集。自作スキルは claude / codex 両方のセッションに載る（同一の `~/.corhino/skills`
+  を共有。codex へは workspace の `.agents/skills` symlink 経由）。反映方法は CLI で異なる —
+  claude タブはヘッダの ⟳ 一発でアクティブなセッションに反映、codex は実行中セッションへの再読込が
+  できないため ⟳ が消え、⚠ は「新しいタブから有効」表示になる。同梱スキル（save-rhino-skill）も
+  両 CLI に載る（codex へは workspace の `.codex/skills` symlink 経由）。
 - **セッション管理**: 会話は CLI が自動保存しており、タブバー右端の 🕘 で過去セッションを一覧・
   ワンクリック再開できる（タイトルは自動生成、日時つき。開いているセッション以外は
   いつでも再開可能）。タブラベルのダブルクリック（または一覧の ✎）で名前を付けられ、名前は

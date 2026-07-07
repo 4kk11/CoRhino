@@ -27,8 +27,6 @@ export type SkillsDrawer = {
   notifyActiveTabChanged: () => void
   /** Close if open (drawer exclusivity). Fires onToggled like a user close. */
   close: () => void
-  /** false while the active tab's CLI has no skills (codex): closes + greys ⚡. */
-  setEnabled: (enabled: boolean) => void
 }
 
 export function createSkillsDrawer(opts: {
@@ -36,6 +34,8 @@ export function createSkillsDrawer(opts: {
   openSkill: (path: string) => void
   reloadSkills: (agentId: string) => void
   getActiveAgentId: () => string | null
+  /** The active tab's CLI: drives ⟳ visibility (codex has no in-session reload). */
+  getActiveCli: () => 'claude' | 'codex' | null
   /** Called after open/close so main.ts can refit and enforce exclusivity. */
   onToggled: (open: boolean) => void
 }): SkillsDrawer {
@@ -73,29 +73,24 @@ export function createSkillsDrawer(opts: {
   button.addEventListener('click', () => toggle())
 
   let open = false
-  // Disabled while the active tab's CLI has no skill loading (codex). The
-  // button stays visible — "not available for this CLI" reads better than a
-  // vanishing control — but ignores clicks; enabling restores it untouched.
-  let enabled = true
 
   function toggle() {
-    if (!enabled) return
     open = !open
     root.classList.toggle('hidden', !open)
     button.classList.toggle('active', open)
     if (open) {
+      syncReloadButton()
       const id = opts.getActiveAgentId()
       if (id) opts.requestList(id)
     }
     opts.onToggled(open)
   }
 
-  function setEnabled(value: boolean) {
-    if (enabled === value) return
-    if (!value && open) toggle() // close while still enabled
-    enabled = value
-    button.classList.toggle('disabled', !value)
-    button.title = value ? L.skillsBtn : L.skillsUnsupported
+  // Codex sessions load skills once at spawn — there is nothing a ⟳ could do,
+  // so it disappears while a codex tab is active (the ⚠ hint says "new tabs"
+  // instead, see buildRow).
+  function syncReloadButton() {
+    reloadBtn.style.display = opts.getActiveCli() === 'codex' ? 'none' : ''
   }
 
   function close() {
@@ -111,6 +106,7 @@ export function createSkillsDrawer(opts: {
 
   function notifyActiveTabChanged() {
     if (!open) return
+    syncReloadButton()
     const id = opts.getActiveAgentId()
     if (id) opts.requestList(id)
   }
@@ -150,7 +146,7 @@ export function createSkillsDrawer(opts: {
     if (skill.needsReload) {
       const hint = document.createElement('div')
       hint.className = 'sd-stalehint'
-      hint.textContent = L.needsReload
+      hint.textContent = opts.getActiveCli() === 'codex' ? L.needsReloadNewTab : L.needsReload
       row.appendChild(hint)
     }
 
@@ -174,7 +170,7 @@ export function createSkillsDrawer(opts: {
     return row
   }
 
-  return { root, button, handleSkillsList, notifyActiveTabChanged, close, setEnabled }
+  return { root, button, handleSkillsList, notifyActiveTabChanged, close }
 }
 
 function injectStyles() {
@@ -187,8 +183,6 @@ function injectStyles() {
   }
   #skillsbtn:hover { background: #222; color: #fff; }
   #skillsbtn.active { background: #111; color: #ffd75f; }
-  #skillsbtn.disabled { opacity: 0.35; cursor: default; }
-  #skillsbtn.disabled:hover { background: transparent; color: #aaa; }
   #skillsdrawer {
     flex: 0 0 260px; display: flex; flex-direction: column; overflow: hidden;
     background: #1a1a1a; border-left: 1px solid #2a2a2a;

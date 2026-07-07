@@ -55,7 +55,7 @@ codex-cli 0.142.5 のローカル実機（自作 streamable-HTTP MCP サーバ +
 | システムプロンプト注入 | `--append-system-prompt` | **`-c developer_instructions="..."`**（既存指示に追記・TUI に不可視・実効を実測確認） | ✅ 実測 |
 | ワークスペース指示 | `CLAUDE.md` | `AGENTS.md`（cwd から自動ロード、実効を実測確認） | ✅ 実測 |
 | セッション削除 | ファイル直接削除 | `codex delete --force <id>`（索引も掃除される。`--force` 必須: 非対話端末では確認プロンプトを出せず exit 1 — 実機で確認） | ✅ 実測 |
-| スキル/プラグイン | `--plugin-dir`（隔離ロード） | `codex plugin` / `~/.codex/skills`（隔離注入手段は未確認） | スコープ外 |
+| スキル/プラグイン | `--plugin-dir`（隔離ロード） | `<cwd>/.agents/skills/` の配置規約（symlink 可）で cwd 限定注入。in-session reload なし・bundled mount 不可（→ 5.8） | ✅ 実測（追加調査） |
 
 ---
 
@@ -113,7 +113,9 @@ internal interface IAgentCli
     // codex=rollout 突合（BG スレッドでポーリング、見つからなければ null のまま）。
     Task<string?> DiscoverSessionIdAsync(SpawnContext ctx, CancellationToken ct);
 
-    bool SupportsSkillsDrawer { get; }  // claude=true / codex=false（当面）
+    bool SupportsSkillsDrawer { get; }        // 両 CLI true（将来の CLI 用の capability）
+    bool SupportsSkillsReload { get; }        // claude: /plugin reload-plugins / codex: false（spawn 時 1 回注入）
+    bool LoadsSkillsViaWorkspaceMount { get; } // claude: false（--plugin-dir）/ codex: true（workspace symlink。リンク健全性を検証して列挙）
 }
 
 internal sealed record SpawnContext(
@@ -286,9 +288,43 @@ SendSessionsList:
 | `onCliAvailability` | 新設（C#→UI、ready 応答時に push） |
 | `listSkills` / `reloadSkills` | codex タブがアクティブな間は ⚡ ボタンを disabled（UI 側制御）。C# 側も Kind=Codex なら no-op ガード |
 
-### 5.8 Skills Drawer（スコープ外の扱い）
+### 5.8 Skills Drawer（codex 対応済み — 2026-07-07 調査に基づき実装）
 
-codex タブでは ⚡ を disabled 表示（隠さない: 「この CLI では未対応」が伝わる方が発見性が良い）。codex の skills/plugin 機構への対応は roadmap に追記し、隔離ロード手段（`--plugin-dir` 相当）が確認できてから設計する。
+codex タブでも ⚡ が有効。codex はプロジェクトスキルを `<cwd>/.agents/skills` と `<cwd>/.codex/skills`
+の**両ルート**から発見する（0.142.5 実測・symlink 経由 OK・trust 不要）ため、workspace に symlink を
+2 本張って claude と**同一のスキル実体**を共有する:
+
+- `.agents/skills` → `~/.corhino/skills/skills`（ユーザースキル）
+- `.codex/skills` → `<plugin dir>/cc-plugin/skills`（同梱 save-rhino-skill 等）
+
+codex は symlink 先の `.claude-plugin/plugin.json` も認識し、スキルは `corhino:save-rhino-skill` の
+ように plugin 名前空間付きで載る（E2E 実測）。claude との差分は 1 点のみ: codex に in-session reload が
+無いため ⟳ は codex タブで非表示、⚠ の文言は「新しいタブから有効」（`IAgentCli.SupportsSkillsReload`）。
+ドロワーは「セッションが実際に持つもの」だけを見せる — mount 経由の CLI
+（`IAgentCli.LoadsSkillsViaWorkspaceMount`）ではソースごとにリンク健全性
+（`Workspace.Codex{User,Bundled}SkillsLinkActive`: LinkTarget が期待先を指すか）を検証してから列挙する。
+
+**2026-07-07 調査結果（ローカル実機 0.142.5 + 公式 docs/ソース rust-v0.142.5 の両面で確認）**:
+
+- `claude --plugin-dir` 直接相当の CLI フラグ / `-c` キーは**存在しない**（`skills.extra_roots` は黙って無視。
+  追加ルート API `skills/extraRoots/set` は app-server 専用で PTY 起動の TUI からは使えない）
+- **本命: `<cwd>/.agents/skills/*/SKILL.md` の配置規約**。cwd（CoRhino 所有の workspace）から発見される
+  プロジェクトスキルとして読まれる。**symlink 経由ロードも実測 OK** →
+  `~/.corhino/workspace/.agents/skills` → `~/.corhino/skills/skills` の symlink 1 本で、
+  claude（`--plugin-dir`）と codex が**同一のスキル実体を共有**できる。`~/.codex` は無傷
+- SKILL.md は claude 形式と互換（`name`/`description` frontmatter。claude 固有の追加キーは無視される。
+  codex は `.claude-plugin/plugin.json` マニフェストも認識）
+- `--disable plugins` はプラグイン由来スキルのみを消し、cwd スキルには干渉しない。CoRhino の現行
+  起動フラグ全部載せの状態でスキルが実行されることを E2E 実測済み
+- **制約 1**: スキル指示はセッション開始時に 1 回注入される方式で、実行中セッションへの
+  reload 手段（claude の `/plugin reload-plugins` 相当）が**ない** → ⚡ の needsReload/⟳ の意味論が
+  codex では成立しない（「新しいタブから反映」のみ）
+- **制約 2**: ユーザーのグローバルスキル（`~/.codex/skills` / `~/.agents/skills`）はセッションに
+  常に混入し、CLI から抑止できない（隔離は claude より弱い）
+
+実装するなら: workspace seed 時に `.agents/skills` symlink を張り（Windows は junction/コピーの
+フォールバック要検討）、codex タブでも ⚡ を有効化して「⟳ なし・新規タブで反映」の表示に分岐する。
+現時点では未実装（roadmap）。
 
 ---
 

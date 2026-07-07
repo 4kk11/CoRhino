@@ -295,6 +295,7 @@ ${isWindowsWebView2 ? `
     openSkill: (path) => post({ type: 'openSkill', path }),
     reloadSkills: (agentId) => post({ type: 'reloadSkills', agentId }),
     getActiveAgentId: () => activeTab?.agentId ?? null,
+    getActiveCli: () => activeTab?.cli ?? null,
     onToggled: (open) => {
       if (open) sessionsDrawer.close()
       if (activeTab) safeFit(activeTab)
@@ -376,12 +377,9 @@ ${isWindowsWebView2 ? `
     // The pane just became visible; fit to its real size and focus it.
     safeFit(tab)
     tab.term.focus()
-    // Codex tabs have no skill loading — grey ⚡ out (and close the drawer)
-    // while one is active. Must precede notifyActiveTabChanged, which would
-    // otherwise request a list the host ignores.
-    drawer.setEnabled(tab.cli !== 'codex')
     // needsReload is per-tab (each spawned/reloaded at a different time), so the
-    // drawer re-requests the list from the new active tab's perspective.
+    // drawer re-requests the list from the new active tab's perspective (and it
+    // re-syncs its ⟳ visibility — codex has no in-session reload).
     drawer.notifyActiveTabChanged()
   }
 
