@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Porta.Pty;
@@ -26,7 +27,7 @@ namespace CoRhino.Pty
         int _lastCols, _lastRows;
         bool _hasLastSize;
 
-        public event Action<byte[]>? DataReceived;
+        public event Action<string>? DataReceived;
         public event Action<int>? Exited;
 
         public bool IsRunning => _connection != null;
@@ -113,15 +114,23 @@ namespace CoRhino.Pty
         {
             if (_connection == null) return;
             var buffer = new byte[4096];
+            // Decode here, statefully — NOT per-chunk downstream. A multi-byte UTF-8
+            // sequence can straddle two reads; per-chunk GetString turns the split
+            // char into U+FFFD×2-3, WIDENING the line claude drew (a rule of 63 `─`
+            // became 65 cells) — xterm wraps it and ink's row arithmetic breaks,
+            // leaving stale fragments around the input box. The Decoder instance
+            // holds the partial sequence between reads, so every char comes out
+            // exactly once and intact.
+            var decoder = Encoding.UTF8.GetDecoder();
+            var chars = new char[Encoding.UTF8.GetMaxCharCount(buffer.Length)];
             try
             {
                 while (!ct.IsCancellationRequested)
                 {
                     int read = await _connection.ReaderStream.ReadAsync(buffer, 0, buffer.Length, ct);
                     if (read <= 0) break;
-                    var chunk = new byte[read];
-                    Array.Copy(buffer, chunk, read);
-                    DataReceived?.Invoke(chunk);
+                    int n = decoder.GetChars(buffer, 0, read, chars, 0);
+                    if (n > 0) DataReceived?.Invoke(new string(chars, 0, n));
                 }
             }
             catch (OperationCanceledException) { }

@@ -96,8 +96,8 @@ sequenceDiagram
 
     CL-->>RL: stdout バイト列
     RL->>RL: ReaderStream.ReadAsync(4096)
-    RL->>OP: DataReceived(chunk) → OnPtyData(agentId, chunk)
-    OP->>OP: UTF8.GetString(chunk)
+    RL->>RL: Decoder.GetChars（状態保持デコード）
+    RL->>OP: DataReceived(string) → OnPtyData(tab, s)
     OP->>UIth: Application.Instance.AsyncInvoke
     alt WebView 未 ready
         UIth->>UIth: tab.Pending にキュー（タブ別）
@@ -109,24 +109,26 @@ sequenceDiagram
 
 ### ステップ詳解
 
-1. **読み取りループ** — `StartAsync` が背景スレッドで `ReadLoop` を回す（[PtySession.cs:66](../../src/Pty/PtySession.cs#L66)）。
-   4096 バイトのバッファで PTY マスターの読み取り側を読む:
+1. **読み取りループ** — `StartAsync` が背景スレッドで `ReadLoop` を回す（[PtySession.cs](../../src/Pty/PtySession.cs)）。
+   4096 バイトのバッファで PTY マスターの読み取り側を読み、**その場で状態保持デコード**して文字列で発火する:
    ```csharp
-   int read = await _connection.ReaderStream.ReadAsync(buffer, 0, buffer.Length, ct);  // PtySession.cs:77
+   var decoder = Encoding.UTF8.GetDecoder();   // チャンク跨ぎの部分バイト列を保持
+   ...
+   int read = await _connection.ReaderStream.ReadAsync(buffer, 0, buffer.Length, ct);
    if (read <= 0) break;          // EOF → 終了扱い（HandleExit）
-   var chunk = new byte[read];
-   Array.Copy(buffer, chunk, read);
-   DataReceived?.Invoke(chunk);   // PtySession.cs:81
+   int n = decoder.GetChars(buffer, 0, read, chars, 0);
+   if (n > 0) DataReceived?.Invoke(new string(chars, 0, n));
    ```
-   claude が出す表示（ANSI エスケープ込み）がこの生バイト列。
+   claude が出す表示（ANSI エスケープ込み）がこのストリーム。デコードを ReadLoop 内の `Decoder`
+   インスタンスで行うのは、マルチバイト UTF-8 が 4096 境界をまたいでも文字を壊さないため
+   （チャンクごとの `GetString` は境界の文字を U+FFFD 化する — design-history B10 参照）。
 
-2. **イベント配線** — `WireSession(tab)` で `tab.Session.DataReceived += data => OnPtyData(agentId, data)`。
-   その PtySession の agentId を閉じ込めて配線するので、出力がどのタブ由来か常に判る。
+2. **イベント配線** — `WireSession(tab)` で `tab.Session.DataReceived += data => OnPtyData(tab, data)`。
+   その PtySession のタブ実体を閉じ込めて配線するので、出力がどのタブ由来か常に判る。
    `DataReceived` は**背景スレッド**で発火するので、ここから UI スレッドへ戻す必要がある。
 
-3. **C# → UI への中継 `OnPtyData(agentId, data)`**:
+3. **C# → UI への中継 `OnPtyData(tab, s)`**（`s` はデコード済み文字列で届く）:
    ```csharp
-   var s = Encoding.UTF8.GetString(data);              // バイト→文字列
    Application.Instance?.AsyncInvoke(() =>              // UI スレッドへマーシャリング
    {
        if (!_tabs.TryGetValue(agentId, out var tab)) return;    // 既に閉じたタブは捨てる
@@ -168,10 +170,10 @@ sequenceDiagram
 
 ## 正確さのために挙げる注意点（コード上の事実）
 
-- **マルチバイト文字の境界割れ**: `ReadLoop` は 4096 バイト単位で読み、`OnPtyData` が**チャンクごとに独立して**
-  `Encoding.UTF8.GetString(data)` する。日本語など複数バイト文字が 4096 境界をまたぐと、そのチャンク端で
-  文字化けし得る。現状コードにはチャンク跨ぎのバイト保持（デコーダの状態保持）が無い。
-  実用上は claude の出力単位が小さく顕在化しにくいが、**設計上の弱点として残っている**。
+- **マルチバイト文字の境界割れは解消済み（B10）**: かつては `OnPtyData` がチャンクごとに独立して
+  `GetString` しており、4096 境界をまたぐ文字が U+FFFD 化して **TUI のレイアウト自体を壊していた**
+  （罫線 `─`×63 = 189 バイトの連続 3 バイト文字が境界を踏むと行が伸び、折り返しで ink の行勘定が狂う）。
+  現在は `ReadLoop` 内の `Encoding.UTF8.GetDecoder()` が部分バイト列をチャンク跨ぎで保持する。
 - **入力時のバイト境界は問題にならない**: 入力は文字列全体を一括 `GetBytes` してから書くので割れない。
 - **終了直後の入力は捨てられる**: `Write` は `_connection==null` を黙殺するので、セッション終了直後に届いた入力は
   破棄される（再起動は別経路 ＝ `EnsureSessionAlive`）。

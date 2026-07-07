@@ -857,9 +857,11 @@ namespace CoRhino.Panel
             RequestSessionsScan();
         }
 
-        void OnPtyData(AgentTab tab, byte[] data)
+        // s arrives already decoded — PtySession owns the byte stream and holds
+        // decoder state across read chunks (see ReadLoop); decoding here per-chunk
+        // is exactly the bug that mangled chunk-straddling characters.
+        void OnPtyData(AgentTab tab, string s)
         {
-            var s = Encoding.UTF8.GetString(data);
             Application.Instance?.AsyncInvoke(() =>
             {
                 // Drop output from a stale session whose id has since been reused.
