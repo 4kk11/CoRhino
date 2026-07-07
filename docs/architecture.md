@@ -54,6 +54,10 @@ CoRhino は **インターフェースだけ**を作る。Rhino 操作の中身�
 この線引きが設計判断 **D2**（→ 7章）。CoRhino にツールを実装しそうになったら、それは Rhino-MCP-Platform
 側の仕事。
 
+例外は同梱 cc-plugin（→ 2.3 / D8）: `save-rhino-skill` など、**Rhino 操作ノウハウではなく CoRhino 自身の
+規約**（スキルの保存先 `~/.corhino/skills` と反映方法）を教えるオンボーディングスキルは CoRhino が持つ。
+Rhino の操作方法を教えるスキル・agents を書きたくなったら、それは Platform 側（配布用プラグイン）の仕事。
+
 ### 1.3 主要登場人物（プロセス／コンポーネント地図）
 
 CoRhino は**単一の Rhino プロセス内**で完結する。外部の node router や別 Rhino プロセスは spawn しない。
@@ -181,11 +185,17 @@ Rhino がドキュメントごとに `new CoRhinoPanel(uint documentSerialNumber
 
 ```
 claude --strict-mcp-config --mcp-config <~/.corhino/sessions/<port>/<agentId>/.mcp.json>
+       --plugin-dir <~/.corhino/skills> --plugin-dir <plugin dir>/cc-plugin
 ```
 
 - `--strict-mcp-config` … ユーザーのグローバル/プロジェクト MCP 設定を一切読まない（`~/.claude` を汚さない＝D3）。
 - `--mcp-config <path>` … この**エージェント専用**の `rhino`（http）サーバだけをロード。同一ポートを指すが
   `X-CoRhino-Agent` ヘッダで接続を区別する（→ D7）。
+- `--plugin-dir <~/.corhino/skills>` … ユーザー自作スキルの local plugin を全セッションに載せる
+  （`Workspace.EnsureUserSkillsPlugin` が骨格を保証 → 2.4 / D8）。
+- `--plugin-dir <plugin dir>/cc-plugin` … CoRhino 同梱のオンボーディングスキル（`save-rhino-skill`：
+  会話から `~/.corhino/skills` へ規約どおりスキルを書き出すメタスキル）。リポジトリの `cc-plugin/` を
+  ビルドが assembly 隣へコピーする（web/ と同じ配送）。無ければ黙ってスキップ。
 - cwd は `Workspace.EnsureSession(_hostPort, agentId, layerPrefix)` が返す **エージェント別** session dir。
   **アクティブ `.3dm` には追従しない**（D5）。
 - claude が PATH に無ければ `bash -l`（Unix）/ `cmd.exe`（Windows）へフォールバック。
@@ -219,6 +229,11 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
 - `CLAUDE.md` テンプレ: セッションの性質、**並列エージェントのルール**（担当レイヤ `<agentId>` 配下のみ書き込み・
   他レイヤは読み取りのみ・他エージェントの変更は都度問い合わせ）、RhinoMCP 主要ツール、進め方を日本語で説明。
   これが各 claude セッションの最初のシステム文脈になる。
+- `EnsureUserSkillsPlugin()`:
+  - `~/.corhino/skills/` にユーザースキル plugin の骨格（`.claude-plugin/plugin.json` + `skills/` +
+    README.md）を**無ければ** seed。以後ユーザー所有、上書きしない（CLAUDE.md と同じ方針）。
+  - 戻り値 = plugin root。`StartSession` が `--plugin-dir` で claude に渡し、全パネル・全タブの
+    セッションに自作スキルが載る。スキル本文は CoRhino が持たない（**配線のみ**＝D2 の境界を維持 → D8）。
 
 ### 2.5 オンボーディング — `RhinoMcpInstaller.cs`
 
@@ -558,7 +573,7 @@ CLAUDE.md に**担当レイヤ接頭辞**（`agent-N/`）を埋め、書き込�
 
 ---
 
-## 7. 確定した設計判断（D1–D6）とトレース
+## 7. 確定した設計判断（D1–D8）とトレース
 
 各判断が**どのコードに現れるか**まで対応づける（判断の詳細な理由・経緯は [`design-history.md`](design-history.md)）。
 
@@ -571,6 +586,7 @@ CLAUDE.md に**担当レイヤ接頭辞**（`agent-N/`）を埋め、書き込�
 | **D5** | claude の cwd は固定（アクティブ `.3dm` に追従しない） | 設定を一元化し挙動を読めるようにする | `Workspace.EnsureSession` が返す sessions dir |
 | **D6** | ホスト MCP ポートと cwd を per-instance 化（D5 の固定を改訂） | 複数 Rhino での混線を防ぐ | `ResolveFreePort` / `sessions/<port>/` / `_hostPort` |
 | **D7** | 1 doc に複数 claude（タブ並列）。同一ポート共有＋レイヤ・ソフト分離＋ `X-CoRhino-Agent` ヘッダ | ホストはステートレス多重接続可。並列独立作業を最小改修で。論理衝突はレイヤで回避、強制は将来 | `_tabs` / `sessions/<port>/<agentId>/` / `.mcp.json` headers / CLAUDE.md のレイヤ節 |
+| **D8** | ユーザー自作スキルは `~/.corhino/skills` の local plugin として全セッションへ注入。保存を担う `save-rhino-skill` メタスキルは同梱 cc-plugin で配布 | ユーザーが会話から動的にスキルを蓄積できる。`~/.claude/skills` に混ぜない（D3 と同じ隔離姿勢）。Rhino ノウハウは持たないが、CoRhino 自身の規約を教えるオンボーディングスキルは持つ（D2 の精緻化 → 1.2） | `Workspace.EnsureUserSkillsPlugin` / `cc-plugin/` / `--plugin-dir` ×2（CoRhinoPanel.cs） |
 
 **MCP ホスト起動の落とし穴（バグ B3）**: `_-MCPStart <port>` は `GetInteger` で対話的にポートを取るため、
 runscript からポートを渡せず「不明なコマンド: <port>」が漏れてホストが上がらなかった。RhinoMCP 側はこの racy な
@@ -592,9 +608,11 @@ runscript からポートを渡せず「不明なコマンド: <port>」が漏�
 
 | パス | 内容 |
 |---|---|
-| `~/.corhino/sessions/<port>/` | claude の cwd（per-instance） |
-| `~/.corhino/sessions/<port>/.mcp.json` | rhino(http) サーバ定義。毎回上書き |
-| `~/.corhino/sessions/<port>/CLAUDE.md` | セッション文脈。初回 seed 後はユーザー所有 |
+| `~/.corhino/sessions/<port>/<agentId>/` | claude の cwd（per-agent） |
+| `~/.corhino/sessions/<port>/<agentId>/.mcp.json` | rhino(http) サーバ定義。毎回上書き |
+| `~/.corhino/sessions/<port>/<agentId>/CLAUDE.md` | セッション文脈。初回 seed 後はユーザー所有 |
+| `~/.corhino/skills/` | ユーザー自作スキル plugin（`--plugin-dir` で全セッションに載る）。骨格は初回 seed 後ユーザー所有 |
+| `<plugin dir>/cc-plugin/` | CoRhino 同梱のオンボーディングスキル（`save-rhino-skill`）。ソースはリポジトリの `cc-plugin/` |
 | `%TMPDIR%/CoRhino.log` | 追記ログ |
 | `<plugin dir>/web/index.html` | バンドル済み UI（単一 HTML） |
 

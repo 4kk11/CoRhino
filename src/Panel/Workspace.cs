@@ -39,6 +39,9 @@ namespace CoRhino.Panel
 
         public static string McpConfigPath(int port, string agentId) => Path.Combine(AgentSessionRoot(port, agentId), ".mcp.json");
 
+        /// <summary>~/.corhino/skills — the user's personal skill plugin root.</summary>
+        public static string UserSkillsRoot => Path.Combine(BaseDir, "skills");
+
         /// <summary>
         /// Find a free TCP port for this Rhino's MCP host, starting at
         /// <see cref="BasePort"/>. When Rhino A already holds 10500, Rhino B binds
@@ -90,6 +93,37 @@ namespace CoRhino.Panel
 
             File.WriteAllText(McpConfigPath(port, agentId), McpConfigTemplate(port, agentId));
             Log.Write($"[CoRhino] Wrote .mcp.json at {McpConfigPath(port, agentId)} (port {port}, agent {agentId})");
+
+            return root;
+        }
+
+        /// <summary>
+        /// Ensure the user's personal skill plugin exists and return its root, which
+        /// StartSession passes to claude via <c>--plugin-dir</c>. Skills the user drops
+        /// (or has an agent write) under <c>skills/</c> ride into every session of every
+        /// panel without touching <c>~/.claude</c> — the same isolation stance as the
+        /// MCP config. CoRhino only owns this wiring; the skill content is the user's
+        /// (the design boundary keeps Rhino know-how out of this repo). The manifest and
+        /// README are seeded once and then user-owned, like CLAUDE.md in EnsureSession.
+        /// </summary>
+        public static string EnsureUserSkillsPlugin()
+        {
+            var root = UserSkillsRoot;
+            Directory.CreateDirectory(Path.Combine(root, "skills"));
+
+            var manifest = Path.Combine(root, ".claude-plugin", "plugin.json");
+            if (!File.Exists(manifest))
+            {
+                Directory.CreateDirectory(Path.Combine(root, ".claude-plugin"));
+                File.WriteAllText(manifest, UserSkillsManifestTemplate);
+                Log.Write($"[CoRhino] Seeded user skills plugin manifest at {manifest}");
+            }
+
+            var readme = Path.Combine(root, "README.md");
+            if (!File.Exists(readme))
+            {
+                File.WriteAllText(readme, UserSkillsReadmeTemplate);
+            }
 
             return root;
         }
@@ -159,6 +193,46 @@ namespace CoRhino.Panel
         ## メモ
 
         - 生成物・スクラッチはこのディレクトリ配下に置く
+        """;
+
+        const string UserSkillsManifestTemplate = """
+        {
+          "name": "my-rhino-skills",
+          "description": "CoRhino の全セッションに読み込まれる自作スキル集",
+          "version": "0.1.0"
+        }
+
+        """;
+
+        const string UserSkillsReadmeTemplate = """
+        # My Rhino Skills
+
+        CoRhino が起動するすべての Claude セッション（全パネル・全タブ）に読み込まれる、
+        あなた専用のスキル置き場。ここに置いたスキルは `~/.claude` に触れずに CoRhino の
+        セッションだけへ届く。
+
+        ## スキルの追加
+
+        `skills/<skill-name>/SKILL.md` を作る:
+
+        ```markdown
+        ---
+        name: facade-louver
+        description: ファサードのルーバーを生成するとき。ピッチ・角度・基準サーフェスを確認してから run_python で生成する
+        ---
+
+        ここに手順・ノウハウ・コード断片を書く。
+        ```
+
+        - `description` が発動条件。Claude はこれを見てスキルを使うか判断するので、
+          「いつ使うか」を具体的に書く。
+        - 手で書かなくても、パネル内の Claude に「今の手順をスキルにして」と頼めば、
+          同梱の `save-rhino-skill` メタスキルがこの規約どおりに書き出してくれる。
+
+        ## 反映タイミング
+
+        - 新しいタブ / セッションには自動で載る。
+        - 実行中のセッションには `/plugin reload-plugins` で反映する。
         """;
     }
 }

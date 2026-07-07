@@ -312,3 +312,49 @@ reopen 時の再 spawn 経路は `CoRhinoPanel._respawning` を `Interlocked` �
 修正後ビルド pass（0 警告）。B5 は実機の `/exit` 経路だけ試して×経路を見落としていた退行で、レビューで捕捉した。
 
 ### 構造そのものの説明 → [`architecture.md`](architecture.md) §5.2 / 残作業 → [`roadmap.md`](roadmap.md)（ここでは重複させない）。
+
+## 追加決定 D8: ユーザー自作スキルの動的配線（2026-07-07）
+
+**意図**: ユーザーが各々、会話の中から自分のスキル（モデリング手順・ノウハウ）を動的に作成・蓄積し、
+以後の全セッションで使えるようにしたい。スキル内容の統括管理は Claude Code の plugin 機構に乗せる。
+
+### 判断と選択理由
+
+- **`~/.corhino/skills/` を local plugin として `--plugin-dir` で全セッションに注入**:
+  plugin 由来のスキルは cwd 非依存なので、per-agent session dir で起動する CoRhino の構成でも
+  確実に載る。`--plugin-dir` は repeatable なので、将来の配布用プラグイン（Platform 側）は
+  2 本目を足すだけで共存できる。
+- **`~/.claude/skills`（user scope）は使わない**: 技術的には隔離起動でも読まれるが、ユーザーの
+  グローバル環境に Rhino スキルが混ざり「`~/.claude` を汚さない」（D3）と矛盾する。専用 dir に分離。
+- **CoRhino が持つのは骨格 seed と配線のみ**: `.claude-plugin/plugin.json` + `skills/` + README を
+  初回に seed（以後ユーザー所有・上書きしない＝session CLAUDE.md と同じ方針）。スキル本文は
+  リポジトリに持たない。Rhino ノウハウを CoRhino に抱え込まない D2 の境界は維持される。
+  骨格生成のタイミングは StartSession 時（spawn 直前）。存在保証が spawn と同じ経路に乗り、
+  別途ライフサイクルを増やさない。
+- **反映モデル**: スキルは起動時ロードなので、新規タブ/セッションには自動で載り、実行中セッションは
+  `/plugin reload-plugins` で再読み込みする。この案内は seed する README に含めた。
+
+### 実装（src/Panel/Workspace.cs, CoRhinoPanel.cs）
+
+- `Workspace.UserSkillsRoot` / `EnsureUserSkillsPlugin()` を追加。
+- `StartSession` の claudeArgs に `--plugin-dir Workspace.EnsureUserSkillsPlugin()` を追加。
+- **検証**: ビルド pass（`dotnet build src/CoRhino.csproj`、0 警告）。実機の
+  「skills/ に SKILL.md を置く → パネル内 claude が発動する」は要実機確認。
+
+### 今後（配布用プラグイン・`save-rhino-skill` メタスキル）→ [`roadmap.md`](roadmap.md)（ここでは重複させない）。
+
+### D8 追記: `save-rhino-skill` メタスキルの同梱（2026-07-07）
+
+当初「メタスキルは Platform 側の配布用プラグインに置く」と整理して roadmap 送りにしたが、再検討して
+**CoRhino 同梱**に変更した。
+
+- **境界の再解釈**: `save-rhino-skill` が教えるのは Rhino 操作ノウハウではなく、**CoRhino 自身の規約**
+  （`~/.corhino/skills` の配置・SKILL.md の書式・`/plugin reload-plugins` での反映）。規約の所有者は
+  CoRhino なので、これはオンボーディングコンテンツであり D2 に抵触しない（→ architecture.md 1.2 の例外注記）。
+- **ユーザー plugin への seed ではなく同梱 plugin にした理由**: seed 方式（初回コピー後ユーザー所有）だと
+  メタスキルの更新が既存ユーザーに届かず、CoRhino 所有のコンテンツがユーザー空間に混ざる。同梱 cc-plugin
+  なら .rhp の更新と一緒に配布され、所有権も分離されたまま（ユーザー plugin は純粋にユーザーの物）。
+- **配送**: リポジトリ `cc-plugin/` → ビルドで `$(TargetDir)cc-plugin/`（web/ と同じ経路）→ spawn 時に
+  2 本目の `--plugin-dir`。ディレクトリが無い install では黙ってスキップ（スキル無しでもセッションは成立）。
+- **検証**: ビルド pass（0 警告）、`claude plugin validate cc-plugin` pass、Rhino plugin dir への配送を確認。
+  パネル内 claude での発動は要実機確認。

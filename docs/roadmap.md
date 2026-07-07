@@ -8,9 +8,16 @@ WIP / pre-alpha のため、ここの項目は予告なく増減・並び替え�
 
 ## 統合・配信
 
-- **cc-plugin の agents/commands ロード（旧 S3 / U1 の残）**: `--plugin-dir` でローカル cc-plugin を
-  ロードし、その agents/commands を CoRhino が定義した http `rhino` サーバに束縛できるかを実機判定する。
-  現状は **agents 無し・素のツール直叩き**で E2E が成立しているので未着手。
+- **D8 の実機確認**: ユーザースキル plugin（`~/.corhino/skills`）と同梱 cc-plugin（`save-rhino-skill`）の
+  `--plugin-dir` 配線は実装済み・ビルド/validate pass だが、パネル内 claude での発動
+  （「skills/ に SKILL.md を置く → 発動」「今の手順をスキルにして → save-rhino-skill が書き出す」）の
+  実機確認が未了。
+- **配布用スキルプラグイン（Platform 側）**: キュレーション済みの **Rhino 操作ノウハウ**のスキル・agents を
+  Platform 側の plugin として配布し、CoRhino は 3 本目の `--plugin-dir`（または marketplace 経由）を
+  足すだけにする。CoRhino に置けるのは自身の規約を教えるオンボーディングスキルのみ（→ D8 追記）。
+- **cc-plugin の agents/commands ロード（旧 S3 / U1 の残）**: `--plugin-dir` の配線と skills 同梱は D8 で
+  入った。agents/commands を CoRhino が定義した http `rhino` サーバに束縛できるかの実機判定が残り。
+  現状は **agents 無し・素のツール直叩き**で E2E が成立している。
 - **plugin 配信の更新戦略**: marketplace 自動更新か submodule バンプかを確定する。
 
 ## オンボーディング

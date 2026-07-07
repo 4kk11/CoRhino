@@ -273,12 +273,27 @@ namespace CoRhino.Panel
                 // Load ONLY this agent's RhinoMCP config (which points at this
                 // instance's host port and carries this agent's header) and ignore
                 // the user's global/project MCP settings, so claude talks to this
-                // Rhino and nothing leaks in.
-                var claudeArgs = new[]
+                // Rhino and nothing leaks in. The user's personal skills ride along
+                // as a local plugin — same stance: delivered per session, nothing
+                // written to ~/.claude.
+                var claudeArgs = new List<string>
                 {
                     "--strict-mcp-config",
                     "--mcp-config", Workspace.McpConfigPath(_hostPort, tab.AgentId),
+                    "--plugin-dir", Workspace.EnsureUserSkillsPlugin(),
                 };
+
+                // CoRhino's bundled cc-plugin (onboarding skills like save-rhino-skill)
+                // ships next to the assembly, like web/. Skip silently if a stripped
+                // install lacks it — the session works without onboarding skills.
+                var bundledPlugin = Path.Combine(
+                    Path.GetDirectoryName(typeof(CoRhinoPanel).Assembly.Location) ?? string.Empty,
+                    "cc-plugin");
+                if (Directory.Exists(bundledPlugin))
+                {
+                    claudeArgs.Add("--plugin-dir");
+                    claudeArgs.Add(bundledPlugin);
+                }
 
                 var isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
                 if (string.IsNullOrEmpty(claudePath))

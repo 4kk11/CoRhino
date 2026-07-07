@@ -88,7 +88,17 @@
     <Copy SourceFiles="@(NativeLib)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="'@(NativeLib)' != ''" />
   </Target>
 
-  <Target Name="PostBuild" AfterTargets="PostBuildEvent" DependsOnTargets="FlattenNativeLibs;CopyWebUi">
+  <!-- Ship the bundled Claude Code plugin (onboarding skills like save-rhino-skill)
+       next to the assembly, like web/. CoRhinoPanel passes it to claude via a second
+       plugin-dir flag at spawn. -->
+  <Target Name="CopyCcPlugin">
+    <ItemGroup>
+      <CcPluginFiles Include="$(MSBuildProjectDirectory)/../cc-plugin/**/*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(CcPluginFiles)" DestinationFolder="$(TargetDir)cc-plugin/%(RecursiveDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent" DependsOnTargets="FlattenNativeLibs;CopyWebUi;CopyCcPlugin">
     <ItemGroup>
       <PluginFiles Include="$(TargetDir)**\*.*" />
     </ItemGroup>

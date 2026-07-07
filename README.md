@@ -27,6 +27,8 @@ Rhino プロセス
 │        ├─ RhinoMCP ホストを MCPSpawn でそのポートに起動 (1パネル=1ホスト)
 │        └─ タブごと (= エージェント) に claude を並列起動
 │             ├─ ~/.corhino/sessions/<port>/<agentId>/ を用意 (CLAUDE.md + .mcp.json)
+│             ├─ ~/.corhino/skills/ をユーザースキル plugin としてロード (--plugin-dir)
+│             ├─ 同梱 cc-plugin をロード (save-rhino-skill = スキル保存メタスキル)
 │             └─ 全タブが同じ http://localhost:<port>/ に接続 (同じ doc を操作)
 └── Rhino-MCP-Platform プラグイン (.rhp)
      └── http://localhost:<port>/ で MCP ホストを提供
@@ -42,6 +44,11 @@ Rhino プロセス
   書き込みが衝突しないようになっている。
 - **セッション隔離**: claude は `--strict-mcp-config --mcp-config <session>/.mcp.json` で
   起動し、ユーザーのグローバル/プロジェクト MCP 設定を読み込まない。`~/.claude` を汚さない。
+- **ユーザー自作スキル**: `~/.corhino/skills/`（初回起動時に骨格を自動生成）を `--plugin-dir` で
+  全セッションに読み込む。パネル内の claude に「今の手順をスキルにして」と頼むと、同梱の
+  `save-rhino-skill` メタスキルが規約どおり `skills/<name>/SKILL.md` を書き出す（手で置いてもよい。
+  書き方は seed される `~/.corhino/skills/README.md` を参照）。全パネル・全タブに載り、
+  実行中セッションへの反映は `/plugin reload-plugins`。
 - **MCP ホスト起動**: `RHINO_MCP_AUTOSTART_PORT` をセットして hidden コマンド `_-MCPSpawn`
   を実行する（`MCPStart` の対話的ポート入力は runscript と相性が悪いため使わない）。
 
@@ -103,10 +110,12 @@ src/                        C# Rhino プラグイン
 ├── Commands/               "CoRhino" コマンド（パネルを開く）
 ├── Panel/
 │   ├── CoRhinoPanel.cs     WebView + xterm.js (タブ式)、ポート採番、複数 claude 起動、MCP ホスト起動
-│   ├── Workspace.cs        ~/.corhino/sessions/<port>/<agentId>/ と .mcp.json / CLAUDE.md の seed
+│   ├── Workspace.cs        ~/.corhino/sessions/<port>/<agentId>/ と .mcp.json / CLAUDE.md、
+│   │                       ~/.corhino/skills/（ユーザースキル plugin 骨格）の seed
 │   └── RhinoMcpInstaller.cs  Rhino-MCP-Platform の yak オンボーディング
 ├── Pty/                    PTY セッション（Porta.Pty）と claude CLI 解決
 └── Resources/icon.png      パネルアイコン
+cc-plugin/                  同梱 Claude Code プラグイン（save-rhino-skill 等のオンボーディングスキル）
 ui/                         パネル UI（TypeScript + xterm.js, vite）
 docs/                       設計・アーキテクチャ・ロードマップ（下記）
 ```

@@ -1,0 +1,6 @@
+{
+  "name": "corhino",
+  "description": "CoRhino パネルが全セッションに同梱するオンボーディングスキル",
+  "version": "0.0.1",
+  "author": { "name": "CoRhino" }
+}
