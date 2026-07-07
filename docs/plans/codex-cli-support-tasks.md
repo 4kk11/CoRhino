@@ -52,7 +52,7 @@ localhost:10590 に立て、`codex exec`（codex-cli 0.142.5）で各構成を�
 
 ---
 
-## Phase 1: アダプタ層導入（claude リファクタ・挙動変更なし）✅ コード完了（2026-07-07・実機スモークのみ残）
+## Phase 1: アダプタ層導入（claude リファクタ・挙動変更なし）✅ 完了（2026-07-07）
 
 **このフェーズの完了条件は「claude の現行動作が 1 ミリも変わらないこと」**。codex はまだ登場しない。
 
@@ -78,7 +78,7 @@ localhost:10590 に立て、`codex exec`（codex-cli 0.142.5）で各構成を�
 
 ---
 
-## Phase 2: codex タブの起動（spawn + MCP + レイヤ + ID 発見）✅ コード完了（2026-07-07・実機スモークのみ残）
+## Phase 2: codex タブの起動（spawn + MCP + レイヤ + ID 発見）✅ 完了（2026-07-07）
 
 - [x] **2-1**: `Workspace.EnsureWorkspace()` に AGENTS.md seed を追加（D17）
   - テンプレを `WorkspaceGuideTemplate` に共通化（文言も CLI 中立に）。既存 workspace には AGENTS.md のみ後追い seed
@@ -121,7 +121,7 @@ localhost:10590 に立て、`codex exec`（codex-cli 0.142.5）で各構成を�
 
 ---
 
-## Phase 3: Sessions Drawer の codex 対応 ✅ コード完了（2026-07-07・実機スモークのみ残）
+## Phase 3: Sessions Drawer の codex 対応 ✅ 完了（2026-07-07）
 
 - [x] **3-1**: `src/Panel/CodexSessionsCatalog.cs` — `Scan()`
   - rollout 全走査 + 1 行目 `session_meta.cwd` フィルタ。head facts は path キー + mtime でキャッシュ
@@ -153,7 +153,7 @@ localhost:10590 に立て、`codex exec`（codex-cli 0.142.5）で各構成を�
 
 ---
 
-## Phase 3b: codex スキル対応（調査により追加。2026-07-07 実装）✅ コード完了（実機スモークのみ残）
+## Phase 3b: codex スキル対応（調査により追加。2026-07-07 実装）✅ 完了（2026-07-07）
 
 前提調査（サブエージェント 2 系統: ローカル実機 0.142.5 / 公式 docs + ソース rust-v0.142.5）:
 `<cwd>/.agents/skills/` と `<cwd>/.codex/skills/` の配置規約でセッション（ディレクトリ）限定注入が可能、
@@ -178,8 +178,8 @@ symlink 経由ロード実測 OK、SKILL.md は claude 互換、`--disable plugi
     `my-rhino-skills:*`（ユーザースキル）の両方がロードされることを確認（plugin 名前空間付き。
     codex は symlink 先の `.claude-plugin/plugin.json` も認識）。当初「出ない」ように見えたのは
     モデルの全列挙が名前空間付きスキルを省略していたためで、ロード自体は成功していた
-- [ ] **3b-5**: 実機スモーク — codex タブで ⚡ が開き user + 同梱スキルが列挙される・スキルが実際に発動する・
-  claude タブは従来どおり（⟳ あり）・`~/.codex` が無変更・symlink 2 本が workspace に生成される
+- [x] **3b-5**: 実機スモーク ✅（2026-07-07 ユーザー確認: 問題なし。save-rhino-skill の初報を受け
+  3b-7 で同梱 mount を追加後、全スモーク完了）
 
 ### 📋 Codex レビュー
 - [x] **3b-6**: 実施済み（2 ラウンド）
@@ -192,19 +192,21 @@ symlink 経由ロード実測 OK、SKILL.md は claude 互換、`--disable plugi
 
 ---
 
-## Phase 4: ドキュメント追従 + 実機確認チェックリスト
+## Phase 4: ドキュメント追従 + 実機確認チェックリスト ✅ 完了（2026-07-07）
 
-- [ ] **4-1**: `docs/architecture.md` 更新（`Cli/` 章、プロトコル表、D14–D17 参照）
-- [ ] **4-2**: `docs/design-history.md` に D14–D17 を記録（Phase 0 の検証ログ含む）
-- [ ] **4-3**: `README.md` 更新（codex 要件・使い方）
-- [ ] **4-4**: `docs/roadmap.md` 更新（codex Skills Drawer / codex ID 回転追跡 / Windows 検証ゲート / 初回タブ CLI 設定化）
-- [ ] **4-5**: 総合実機確認
-  - [ ] claude / codex 混在パネルで両タブが同一 doc を操作できる
-  - [ ] codex タブのレイヤ分離（採番レイヤ配下のみ書き込み）
-  - [ ] resume 後に同一レイヤが復元される
-  - [ ] `~/.codex/config.toml` / `~/.claude` が無変更
-  - [ ] codex 未導入マシン相当（PATH から外して）でメニューがグレーアウト、claude は通常動作
-  - [ ] `/exit`（claude）・`Ctrl-D`（codex）での終了 → タブ撤去 → 最後のタブでパネルクローズ
+- [x] **4-1**: `docs/architecture.md` 更新（2.7b `Cli/` 章、プロトコル表、7 章 D1–D18 テーブル。各 Phase で随時更新 + Phase 4 で最終整合）
+- [x] **4-2**: `docs/design-history.md` に D13–D18 を記録（検証・レビュー経緯含む。既存 D12=ログ2レベル化との衝突を発見し codex 判断を D13 起点に振り直し）
+- [x] **4-3**: `README.md` 更新（codex 要件・使い方・スキル/セッションの CLI 差分）
+- [x] **4-4**: `docs/roadmap.md` 更新（「Codex CLI 対応の残り」節を新設、Windows ゲートに symlink 権限を追記）
+- [x] **4-5**: 総合実機確認 ✅（2026-07-07 ユーザー確認: 全スモーク完了）
+  - [x] claude / codex 混在パネルで両タブが同一 doc を操作できる
+  - [x] codex タブのレイヤ分離（採番レイヤ配下のみ書き込み）
+  - [x] resume 後に同一レイヤが復元される
+  - [x] `~/.codex/config.toml` / `~/.claude` が無変更
+  - [x] codex 未導入マシン相当でメニューがグレーアウト、claude は通常動作
+  - [x] `/exit`（claude）・`Ctrl-D`（codex）での終了 → タブ撤去 → 最後のタブでパネルクローズ
+  - [x] MCP ツール承認プロンプトなし（`default_tools_approval_mode="approve"` 修正後）・
+    シェル承認なし（`-a never -s workspace-write`）
 
 - [x] **4-7（追加・実機フィードバック起点）**: codex タブを承認プロンプトなしで起動
   - `-a never -s workspace-write` を `CodexCli.BuildArgs` の既定に（`--full-auto` は 0.142.5 に無く
