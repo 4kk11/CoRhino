@@ -376,7 +376,7 @@ namespace CoRhino.Panel
             var indexPath = Path.Combine(pluginDir, "web", "index.html");
             if (!File.Exists(indexPath))
             {
-                Log.Write($"[CoRhino] web/index.html not found at {indexPath}");
+                Log.User($"[CoRhino] web/index.html not found at {indexPath}");
                 return;
             }
             var html = File.ReadAllText(indexPath);
@@ -452,7 +452,8 @@ namespace CoRhino.Panel
                 {
                     var fallbackApp = isWindows ? "cmd.exe" : "/bin/bash";
                     var fallbackArgs = isWindows ? Array.Empty<string>() : new[] { "-l" };
-                    Log.Write($"[CoRhino] `claude` CLI not found on PATH. Falling back to {fallbackApp}. PATH=" + (loginPath ?? "<none>"));
+                    Log.User($"[CoRhino] `claude` CLI not found on PATH. Falling back to {fallbackApp}.");
+                    Log.Write("[CoRhino] PATH=" + (loginPath ?? "<none>"));
                     await tab.Session.StartAsync(fallbackApp, fallbackArgs, cwd, env).ConfigureAwait(false);
                     Log.Write($"[CoRhino] {fallbackApp} spawned in {cwd}");
                 }
@@ -474,7 +475,7 @@ namespace CoRhino.Panel
             }
             catch (Exception ex)
             {
-                Log.Write($"[CoRhino] PTY start failed: {ex.GetType().Name}: {ex.Message}");
+                Log.User($"[CoRhino] PTY start failed: {ex.GetType().Name}: {ex.Message}");
                 Log.Write($"[CoRhino] Stack: {ex.StackTrace}");
                 if (ex.InnerException != null)
                     Log.Write($"[CoRhino] Inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
@@ -509,9 +510,10 @@ namespace CoRhino.Panel
                     // autostart (it bails when the var is set), so we own the port.
                     Environment.SetEnvironmentVariable("RHINO_MCP_AUTOSTART_PORT", port.ToString());
                     var ok = RhinoApp.RunScript("_-MCPSpawn _Enter\n", false);
-                    Log.Write(ok
-                        ? $"[CoRhino] MCPSpawn fired on port {port} (host MCP up)."
-                        : $"[CoRhino] MCPSpawn failed (Rhino-MCP-Platform not installed?).");
+                    if (ok)
+                        Log.Write($"[CoRhino] MCPSpawn fired on port {port} (host MCP up).");
+                    else
+                        Log.User("[CoRhino] MCPSpawn failed (Rhino-MCP-Platform not installed?).");
                 }
                 catch (Exception ex)
                 {

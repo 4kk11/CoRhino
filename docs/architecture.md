@@ -346,8 +346,13 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
 
 ### 2.8 ログ — `Log.cs`
 
-**責務**: 単純な追記ログ。`%TMPDIR%/CoRhino.log` にロック付きで追記し、同時に `RhinoApp.WriteLine` でコマンドラインにも出す
-（[Log.cs:13](../src/Log.cs#L13)）。デバッグはこのファイルを `tail` するのが基本。
+**責務**: 単純な追記ログ。2つの入口を持つ（[Log.cs:13](../src/Log.cs#L13)）。
+
+- `Log.Write` — 診断トレース。`%TMPDIR%/CoRhino.log` にロック付きで追記するだけで、コマンドラインには出さない。
+  デバッグはこのファイルを `tail` するのが基本
+- `Log.User` — ユーザー向け。`RhinoApp.WriteLine` でコマンドラインに出し、ファイルにも追記する。
+  ダイアログもパネル UI も持たないユーザー影響のある失敗（claude CLI 不在フォールバック、PTY 起動失敗、
+  MCPSpawn 失敗、`web/index.html` 欠落）とインストール進捗のみに限定する
 
 ### 2.9 UI 層 — `ui/`（xterm.js）
 

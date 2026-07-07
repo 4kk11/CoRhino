@@ -84,7 +84,7 @@ namespace CoRhino.Panel
             // Lightweight progress on the command line; the heavy states (done→restart,
             // error) are native dialogs per the chosen status mechanism.
             Log.Write($"[CoRhino] Installing {PackageName} via {yak} ...");
-            RhinoApp.WriteLine(L10n.T($"{PackageName} をインストールしています...", $"Installing {PackageName}..."));
+            Log.User(L10n.T($"{PackageName} をインストールしています...", $"Installing {PackageName}..."));
 
             Task.Run(() =>
             {
