@@ -2,13 +2,23 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { createSkillsDrawer, type SkillsListPayload } from './skills-drawer'
+import { createSessionsDrawer, type SessionsListPayload } from './sessions-drawer'
+
+// The host created an agent (tab). sessionId is the claude session it runs;
+// label is the initial tab text (custom name > auto title > agentId) —
+// delivered with creation so a resumed tab never flashes "agent-N" first.
+// customName is the user-given name only (null when the label is an auto title
+// or the agentId) — the rename input must prefill with THIS, never the label,
+// or a blur-commit would freeze an auto title into a permanent custom name.
+type TabCreatedPayload = { agentId: string; sessionId: string | null; label: string; customName: string | null }
+type TabLabelPayload = { agentId: string; label: string; customName: string | null }
 
 declare global {
   interface Window {
     eto?: { postMessage: (msg: string) => void }
     CoRhinoPanel?: {
       // The host created an agent (tab); build an xterm for it and focus it.
-      onTabCreated: (agentId: string) => void
+      onTabCreated: (payload: TabCreatedPayload) => void
       // Output from an agent's PTY → its terminal.
       onPtyData: (agentId: string, text: string) => void
       // A fresh claude is starting in an existing tab; wipe its screen.
@@ -19,6 +29,10 @@ declare global {
       onTabsReset: () => void
       // Skill list for one tab (listSkills/reloadSkills response or watcher push).
       onSkillsList: (payload: SkillsListPayload) => void
+      // Sessions list (listSessions response or post-change push), tab-independent.
+      onSessionsList: (payload: SessionsListPayload) => void
+      // A tab's label changed (rename, or an auto title appeared in a scan).
+      onTabLabel: (payload: TabLabelPayload) => void
     }
     chrome?: { webview?: { postMessage: (msg: string) => void } }
   }
@@ -33,6 +47,9 @@ type Outbound =
   | { type: 'listSkills'; agentId: string }
   | { type: 'openSkill'; path: string }
   | { type: 'reloadSkills'; agentId: string }
+  | { type: 'listSessions' }
+  | { type: 'resumeSession'; sessionId: string }
+  | { type: 'renameSession'; sessionId: string; name: string }
   | { type: 'debug'; message: string }
 
 function post(msg: Outbound) {
@@ -111,6 +128,14 @@ function boot() {
   }
   .tab:hover { background: #222; }
   .tab.active { background: #111; color: #fff; }
+  .tab .tablabel {
+    max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .tab .tabrename {
+    width: 140px; background: #111; color: #ddd; border: 1px solid #444;
+    border-radius: 2px; padding: 1px 4px; outline: none;
+    font: 12px ui-monospace, Menlo, monospace;
+  }
   .tab .close { color: #777; padding: 0 2px; border-radius: 2px; }
   .tab .close:hover { color: #fff; background: #444; }
   #addtab {
@@ -156,31 +181,50 @@ ${isWindowsWebView2 ? `
   const termsEl = document.createElement('div')
   termsEl.id = 'terminals'
 
-  // Skills Drawer: ⚡ at the tab bar's right edge toggles a fixed-width panel to
-  // the right of the terminals. The drawer module owns its DOM; we own the layout
-  // slot, the message bridge, and refitting the terminal on open/close.
+  // Drawers: ⚡ (skills) and 🕘 (sessions) at the tab bar's right edge each
+  // toggle a fixed-width panel to the right of the terminals. The drawer modules
+  // own their DOM; we own the layout slots, the message bridge, exclusivity
+  // (opening one closes the other — there is only one 260px slot's worth of
+  // room), and refitting the terminal on open/close.
   const drawer = createSkillsDrawer({
     requestList: (agentId) => post({ type: 'listSkills', agentId }),
     openSkill: (path) => post({ type: 'openSkill', path }),
     reloadSkills: (agentId) => post({ type: 'reloadSkills', agentId }),
     getActiveAgentId: () => activeTab?.agentId ?? null,
-    onToggled: () => { if (activeTab) safeFit(activeTab) },
+    onToggled: (open) => {
+      if (open) sessionsDrawer.close()
+      if (activeTab) safeFit(activeTab)
+    },
   })
+  const sessionsDrawer = createSessionsDrawer({
+    requestList: () => post({ type: 'listSessions' }),
+    resumeSession: (sessionId) => post({ type: 'resumeSession', sessionId }),
+    renameSession: (sessionId, name) => post({ type: 'renameSession', sessionId, name }),
+    onToggled: (open) => {
+      if (open) drawer.close()
+      if (activeTab) safeFit(activeTab)
+    },
+  })
+  tabbar.appendChild(sessionsDrawer.button)
   tabbar.appendChild(drawer.button)
 
   const mainEl = document.createElement('div')
   mainEl.id = 'main'
   mainEl.appendChild(termsEl)
   mainEl.appendChild(drawer.root)
+  mainEl.appendChild(sessionsDrawer.root)
   rootEl.appendChild(tabbar)
   rootEl.appendChild(mainEl)
 
   type Tab = {
     agentId: string
+    sessionId: string | null
+    customName: string | null
     term: Terminal
     fit: FitAddon
     pane: HTMLElement
     tabEl: HTMLElement
+    labelEl: HTMLElement
     lastCols: number
     lastRows: number
   }
@@ -231,7 +275,8 @@ ${isWindowsWebView2 ? `
     drawer.notifyActiveTabChanged()
   }
 
-  function addTab(agentId: string) {
+  function addTab(payload: TabCreatedPayload) {
+    const { agentId, sessionId, label, customName } = payload
     if (tabs.has(agentId)) {
       activateTab(agentId)
       return
@@ -241,7 +286,8 @@ ${isWindowsWebView2 ? `
     termsEl.appendChild(pane)
 
     const { term, fit } = createTerminal()
-    const tab: Tab = { agentId, term, fit, pane, tabEl: buildTabButton(agentId), lastCols: term.cols, lastRows: term.rows }
+    const { tabEl, labelEl } = buildTabButton(agentId, label)
+    const tab: Tab = { agentId, sessionId, customName, term, fit, pane, tabEl, labelEl, lastCols: term.cols, lastRows: term.rows }
     tabs.set(agentId, tab)
     tabscroll.insertBefore(tab.tabEl, addBtn)
 
@@ -275,11 +321,20 @@ ${isWindowsWebView2 ? `
     debug(`tab ${agentId} created ${term.cols}x${term.rows}`)
   }
 
-  function buildTabButton(agentId: string): HTMLElement {
+  function buildTabButton(agentId: string, initialLabel: string): { tabEl: HTMLElement; labelEl: HTMLElement } {
     const el = document.createElement('div')
     el.className = 'tab'
     const label = document.createElement('span')
-    label.textContent = agentId
+    label.className = 'tablabel'
+    label.textContent = initialLabel
+    label.title = 'ダブルクリックで名前を変更'
+    label.addEventListener('dblclick', (e) => {
+      e.stopPropagation()
+      const tab = tabs.get(agentId)
+      // sessionId is the rename's persistence key; without one there is
+      // nothing to attach a name to (defensive — the host always sends one).
+      if (tab?.sessionId) startTabRename(tab)
+    })
     const close = document.createElement('span')
     close.className = 'close'
     close.textContent = '×'
@@ -291,7 +346,43 @@ ${isWindowsWebView2 ? `
     el.appendChild(label)
     el.appendChild(close)
     el.addEventListener('click', () => activateTab(agentId))
-    return el
+    return { tabEl: el, labelEl: label }
+  }
+
+  // Swap the tab label for an inline input. Enter = commit, Esc = cancel,
+  // blur = commit; an empty commit reverts to the auto title. The host persists
+  // the name and pushes onTabLabel back, which is what updates the label — no
+  // optimistic render, so the label always reflects what was actually saved.
+  // (The document-level capture keydown hook ignores this input: it only acts
+  // when the active terminal's textarea is focused.)
+  function startTabRename(tab: Tab) {
+    if (!tab.sessionId) return
+    const sessionId = tab.sessionId
+    const input = document.createElement('input')
+    input.className = 'tabrename'
+    // Prefill with the user-given name only; the auto title stays a placeholder
+    // so a stray blur commits "" (= keep auto) instead of freezing the title.
+    input.value = tab.customName ?? ''
+    input.placeholder = tab.labelEl.textContent ?? ''
+    input.addEventListener('click', (e) => e.stopPropagation())
+    input.addEventListener('dblclick', (e) => e.stopPropagation())
+    let done = false
+    const finish = (commit: boolean) => {
+      if (done) return
+      done = true
+      if (commit) post({ type: 'renameSession', sessionId, name: input.value.trim() })
+      input.replaceWith(tab.labelEl)
+      tab.term.focus()
+    }
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation()
+      if (e.key === 'Enter') finish(true)
+      else if (e.key === 'Escape') finish(false)
+    })
+    input.addEventListener('blur', () => finish(true))
+    tab.labelEl.replaceWith(input)
+    input.focus()
+    input.select()
   }
 
   function removeTab(agentId: string) {
@@ -373,8 +464,8 @@ ${isWindowsWebView2 ? `
   }
 
   window.CoRhinoPanel = {
-    onTabCreated(agentId: string) {
-      addTab(agentId)
+    onTabCreated(payload: TabCreatedPayload) {
+      addTab(payload)
     },
     onPtyData(agentId: string, text: string) {
       tabs.get(agentId)?.term.write(text)
@@ -390,6 +481,15 @@ ${isWindowsWebView2 ? `
     },
     onSkillsList(payload: SkillsListPayload) {
       drawer.handleSkillsList(payload)
+    },
+    onSessionsList(payload: SessionsListPayload) {
+      sessionsDrawer.handleSessionsList(payload)
+    },
+    onTabLabel(payload: TabLabelPayload) {
+      const tab = tabs.get(payload.agentId)
+      if (!tab) return
+      tab.customName = payload.customName
+      tab.labelEl.textContent = payload.label
     },
   }
 

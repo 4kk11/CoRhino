@@ -26,7 +26,8 @@ Rhino プロセス
 │        ├─ インスタンス専用ポートを採番 (base 10500)
 │        ├─ RhinoMCP ホストを MCPSpawn でそのポートに起動 (1パネル=1ホスト)
 │        └─ タブごと (= エージェント) に claude を並列起動
-│             ├─ ~/.corhino/sessions/<port>/<agentId>/ を用意 (CLAUDE.md + .mcp.json)
+│             ├─ 共有ワークスペース ~/.corhino/workspace/ を cwd に (CLAUDE.md)
+│             ├─ ~/.corhino/runtime/ にタブ専用の .mcp.json を生成
 │             ├─ ~/.corhino/skills/ をユーザースキル plugin としてロード (--plugin-dir)
 │             ├─ 同梱 cc-plugin をロード (save-rhino-skill = スキル保存メタスキル)
 │             └─ 全タブが同じ http://localhost:<port>/ に接続 (同じ doc を操作)
@@ -40,9 +41,9 @@ Rhino プロセス
   各パネルが自分の Rhino を操作する。
 - **1 ドキュメントに複数 claude（並列エージェント）**: 1パネル内のタブを「＋」で増やすと、
   複数の claude が同じ Rhino を並列に操作する。RhinoMCP ホストはステートレスでツール実行を
-  UI スレッドで直列化するため安全。各エージェントには専用レイヤ（`agent-1/` …）が割り当てられ、
-  書き込みが衝突しないようになっている。
-- **セッション隔離**: claude は `--strict-mcp-config --mcp-config <session>/.mcp.json` で
+  UI スレッドで直列化するため安全。各セッションには専用レイヤ（`s-XXXXXXXX/`）が割り当てられ、
+  書き込みが衝突しないようになっている（再開しても同じレイヤに戻る）。
+- **セッション隔離**: claude は `--strict-mcp-config --mcp-config <runtime>/.mcp.json` で
   起動し、ユーザーのグローバル/プロジェクト MCP 設定を読み込まない。`~/.claude` を汚さない。
 - **ユーザー自作スキル**: `~/.corhino/skills/`（初回起動時に骨格を自動生成）を `--plugin-dir` で
   全セッションに読み込む。パネル内の claude に「今の手順をスキルにして」と頼むと、同梱の
@@ -52,6 +53,11 @@ Rhino プロセス
 - **スキル一覧ドロワー**: タブバー右端の ⚡ で、溜まったスキルの一覧（自作/同梱バッジ・説明）を
   ターミナル横に表示する。保存直後のスキルはライブで現れ、未反映なら ⚠ が付き、ヘッダの ⟳ 一発で
   アクティブなセッションに反映できる。「エディタで開く」で SKILL.md を直接編集。
+- **セッション管理**: 会話は claude が自動保存しており、タブバー右端の 🕘 で過去セッションを一覧・
+  ワンクリック再開できる（タイトルは claude の自動生成、日時つき。開いているセッション以外は
+  いつでも再開可能）。タブラベルのダブルクリック（または一覧の ✎）で名前を付けられ、名前は
+  再開後も引き継がれる。全セッションが共有ワークスペース（`~/.corhino/workspace/`）で動くので、
+  Rhino を再起動しても履歴が繋がる。
 - **MCP ホスト起動**: `RHINO_MCP_AUTOSTART_PORT` をセットして hidden コマンド `_-MCPSpawn`
   を実行する（`MCPStart` の対話的ポート入力は runscript と相性が悪いため使わない）。
 
@@ -88,7 +94,7 @@ dotnet build src/CoRhino.csproj
 ### 並列エージェント（タブ）
 
 タブバーの「＋」で **同じ Rhino ドキュメントに対して claude をもう1つ**起動できる。各タブは
-独立した Claude セッション（別 cwd・別履歴）で、専用レイヤ接頭辞（`agent-1/`, `agent-2/` …）が
+独立した Claude セッション（別履歴）で、セッションごとの専用レイヤ接頭辞（`s-XXXXXXXX/`）が
 割り当てられる。各エージェントは自分のレイヤ配下にだけ書き込み、他レイヤは読み取りのみとする
 規約で動くので、並列で別々の作業（例: 片方がジオメトリ生成、片方が解析）を進めても衝突しにくい。
 タブの「×」でそのエージェントだけ終了できる。
@@ -114,7 +120,9 @@ src/                        C# Rhino プラグイン
 ├── Panel/
 │   ├── CoRhinoPanel.cs     WebView + xterm.js (タブ式)、ポート採番、複数 claude 起動、MCP ホスト起動
 │   ├── SkillsCatalog.cs    スキル一覧ドロワーのデータ層（スキャン + frontmatter パース）
-│   ├── Workspace.cs        ~/.corhino/sessions/<port>/<agentId>/ と .mcp.json / CLAUDE.md、
+│   ├── SessionsCatalog.cs  セッション一覧ドロワーのデータ層（~/.claude/projects のトランスクリプトスキャン）
+│   ├── SessionNames.cs     ユーザーが付けたセッション名の永続化（~/.corhino/session-names.json）
+│   ├── Workspace.cs        ~/.corhino/workspace/（共有 cwd + CLAUDE.md）と runtime/ の .mcp.json、
 │   │                       ~/.corhino/skills/（ユーザースキル plugin 骨格）の seed
 │   └── RhinoMcpInstaller.cs  Rhino-MCP-Platform の yak オンボーディング
 ├── Pty/                    PTY セッション（Porta.Pty）と claude CLI 解決

@@ -401,3 +401,142 @@ reopen 時の再 spawn 経路は `CoRhinoPanel._respawning` を `Interlocked` �
   スクロールアウト（`margin-left:auto` は overflow で無効）→ タブ列を `#tabscroll` に分離し ⚡ を固定。
   (5) watcher の `Error` 未購読でサイレント死 → ログ追加（V1 は再生成しない）。claude ビジー時の
   ⟳ による false ● とタブ死亡時の残留表示は既知の限界として設計書に明記（V1 許容）。
+
+## 追加決定 D10: セッション管理（安定ディレクトリ + Sessions Drawer + タブ命名）（2026-07-07）
+
+**意図**: タブを閉じる・Rhino を落とすと会話に戻る手段がなかった。実際には claude 自身が
+`~/.claude/projects/<cwd-slug>/<sessionId>.jsonl` に全履歴を残しており `--resume <id>` で再開できるが、
+resume は **cwd 依存**で、当時の cwd `sessions/<port>/<agentId>` はポート採番に依存していた——
+実際に 10500 が塞がれて 10501 に採番された時点で履歴が分断された（両 dir が実在した）。
+そこで (1) cwd をポート非依存に安定化し、(2) 過去セッションをドロワーで一覧・ワンクリック再開、
+(3) セッション（=タブ）への命名を導入した。プラン: `~/.claude/plans/`（親リポジトリ側で承認済み）。
+
+### 判断と選択理由
+
+- **`sessions/<agentId>/` にポート層を削除（D6 の cwd 部分を改訂）**: D6 の目的は「どの Rhino を操作するか」の
+  分離で、それはポートと `.mcp.json` の中身が担う。cwd までポートに縛る必然はなく、履歴の連続性を壊す
+  だけだった。`.mcp.json` は spawn 毎に現在ポートで書き直す（claude は起動時に一度読むだけなので安全）。
+  旧 `sessions/<port>/` の履歴は**移行しない**（pre-alpha 方針。dir を手で mv しても slug が変わるので
+  resume は復活しない——履歴は諦めるのが正しい）。
+- **スロット割当を単調連番 → 最小空き番号に**: 履歴は cwd キーなので、agent-27 まで増える連番では
+  ディレクトリが散らばる。少数の安定スロットに蓄積させる。id 再利用の安全性は既存の `ReferenceEquals`
+  ガード（もともと reopen の id 再生のために存在）がそのまま担保する。
+- **spawn 時に `--session-id <GUID>` で ID を固定**: claude が採番する ID を後から知る手段はログの
+  パースしかない。C# が先に採番して渡せば、タブ⇄トランスクリプトの対応が常に既知になり、
+  リネームの永続キー・実行中判定・resume の重複防止すべてがこの上に載る。
+  既知の限界: `/clear` は ID を黙って回転させる（V1 は文書化のみ）。
+- **resume はホームスロット限定・占有中は不可**: `--resume` は同じ cwd からしか効かない。占有スロットへの
+  同居 spawn は同一レイヤ接頭辞の並列 claude を生み、D7 のレイヤ規約と履歴の分離を両方壊すので許可しない
+  （UI はグレー表示、C# 側も defense-in-depth で拒否）。`--fork-session` での別スロット展開も cwd 制約で
+  不可能なので採らない。
+- **allowlist + 存在検証**: `resumeSession` は直近 Scan が返した sessionId のみ受け付け（openSkill の
+  `IsKnownSkillPath` と同型）、spawn 前に jsonl の存在を再検証する。消えた ID で claude が即死すると
+  `RemoveTab` → 唯一のタブならパネルごと閉じる、まで連鎖するため。
+- **空セッションのフィルタ**: claude は spawn しただけで jsonl（mode / file-history-snapshot 行）を作る。
+  非メタ user 行も ai-title も無いファイルは一覧に出さない。これが無いと開いて閉じただけのタブが
+  全部ゴミ行になる。
+- **タイトル抽出はチャンク読み（head 64KB + tail 256KB）**: トランスクリプトは MB 級で全読みは
+  スキャン毎に高くつく。新フォーマットに `"type":"summary"` は無く、タイトルは `ai-title` 行の
+  **最後の出現**（fallback: `last-prompt` → 最初の非メタ user プロンプト）。チャンク境界は最初の改行まで
+  捨てて UTF-8 破断を回避。スキャンは BG スレッド + `Interlocked` single-flight。
+- **命名は `~/.corhino/session-names.json`（sessionId キー）を C# が所有**: claude の `--name` は
+  ephemeral（PID キーのランタイムレジストリ）で永続しない。sessionId キーなら /exit → resume を跨いで
+  名前が復元される。タブラベルは 手動名 > ai-title > agentId の優先で、`onTabCreated` に初期ラベルを
+  同梱（後追い push だと agent-N が一瞬見える）。
+- **`onTabCreated(agentId)` → `onTabCreated({agentId, sessionId, label})` の破壊的変更**: pre-alpha
+  方針どおりシム無しで両側同時変更。UI がタブから `renameSession` を送るのに sessionId が要る。
+
+### 実装（Workspace.cs、CoRhinoPanel.cs、SessionsCatalog.cs 新規、SessionNames.cs 新規、ui/src/sessions-drawer.ts 新規、main.ts、skills-drawer.ts）
+
+- メッセージ 3 種（`listSessions` / `resumeSession` / `renameSession`）と `onSessionsList` / `onTabLabel`、
+  `onTabCreated` のペイロード化（→ architecture.md §3.2）。
+- ドロワーは skills と排他（`close()` API を両ドロワーに追加、開いた側がもう片方を閉じる）。
+- タブラベルのダブルクリック → インライン input（Enter/Esc/blur）。反映は C# の `onTabLabel` push 待ち
+  （楽観描画しない＝保存された値だけが表示される）。
+- **検証**: `dotnet build` pass（0 警告）・`tsc --noEmit` 0 エラー。実機確認は未 → roadmap。
+  Windows の slug エンコーディング（`C:\` の `\`・`:`）は未検証 → Windows で完了宣言する前の必須ゲート。
+
+### レビューの指摘と対応（同日）
+
+汎用レビューエージェント（+ Codex）のアドバーサリアルレビューで修正した実指摘:
+
+- **(H1) スロット占有がパネルローカルだった**: スロット dir がポート非依存＝プロセスグローバルになったのに、
+  `AllocateSlot` が自パネルの `_tabs` しか見ていなかった。macOS でも doc ごとに別パネルが**同一プロセス内**に
+  共存するため、2パネルが agent-1 を取り合い、片方の `EnsureSession` が他方の `.mcp.json` を別ポートで
+  書き換える（＝**別の Rhino doc を操作する claude**）恐れがあった。プロセス全体の static `ClaimedSlots`
+  （UI スレッド専有、`RegisterTab`/`UnregisterTab` に一元化）で占有を仲裁。resume の busy 判定・ドロワーの
+  スロット使用中バッジも同セットを見る。クロス**プロセス**（Windows の2 Rhino）は引き続き V1 の既知の限界。
+- **(M1) スキャン中に届いた再要求が捨てられていた**: rename 直後の再スキャン要求が in-flight スキャンに
+  飲まれ、ドロワーが旧名のまま残る。`_sessionsScanPending` フラグで「終わったらもう1周」に変更。
+- **(M2) タブリネームの prefill が表示ラベルだった**: 自動タイトル表示中にダブルクリック → blur で
+  そのタイトルが**恒久的な手動名として確定**してしまう（以後 ai-title の更新を影で塞ぐ）。
+  `customName` を `onTabCreated`/`onTabLabel` に同梱し、input は手動名のみ prefill・自動タイトルは
+  placeholder に（ドロワー側と同じ規約に統一）。
+- **(M3) 描画 push が編集中のリネーム input を破壊**: 他タブの終了などで届く `onSessionsList` が
+  `list.textContent = ''` で focused input を消す（WebKit は blur も発火しない＝入力が無言で消失）。
+  input が開いている間は再描画をスキップ。
+- **(M4) slug 変換が Unicode を残していた**: `char.IsLetterOrDigit` は日本語等を保持するが、claude の
+  エンコーダは ASCII 英数字以外を全て `-` にする。日本語ユーザー名のホームパスでドロワーが常時空になる
+  ところだった。ASCII 限定判定に修正。
+- **(L1) `fs.Length` の二重読み**: スキャン中に claude がファイルを truncate すると負サイズ確保で例外
+  （per-file catch で握るが）。長さを1回だけスナップショット。
+- **(L2) Dispose 後の遅延スキャンが破棄済み WebView に触る**: `Dispose` で `_webReady=false` を立てて遮断。
+- **(L3) session-names.json の非アトミック書き込み**: クラッシュで全名前消失し得る → temp + `File.Move`。
+
+採用しなかった/受容した指摘: 巨大単一行（64KB 超・改行なし）のトランスクリプトは一覧に出ない（実運用で
+発生せず、空セッションフィルタの副作用として無害）。フォールバックシェルタブの SessionId が
+jsonl 化されない点は既知（リネームすると孤児エントリ、無害・剪定は roadmap）。
+
+### Codex レビューの指摘と対応（同日・2回目）
+
+- **(HIGH) 起動中タブ close 後の stale `EnsureSession`**: `Starting` 中のタブを閉じるとスロット claim が
+  即解放され、再割当された新タブの `.mcp.json` を、まだ走っている旧タブの `StartSession`（BG スレッド）が
+  旧パネルのポートで上書きし得る——新 claude が**別の Rhino doc に接続**する H1 と同類の穴。
+  対応: `UnregisterTab` は `Starting` 中なら claim を解放せず `ReleaseSlotOnLaunchExit` を立て、
+  launch タスクの finally（`Starting=false` の後）が UI スレッド経由で解放する。
+  claim が生きている限り再割当は起きないので、stale な書き込みは無主のディレクトリにしか届かない。
+- **(LOW) 巨大な初回メッセージ（head チャンク超）の実セッションが一覧から消える**: head に user 行が
+  見つからなくても tail の `last-prompt` が実在の証拠 → `HasContent` に `lastPrompt != null` を追加。
+- **(LOW・受容) 他パネルのスロット解放がドロワーへ即時反映されない**: パネル B のドロワーを開いたまま
+  パネル A がスロットを解放しても、B の一覧は次の契機（開き直し・自パネルのタブ増減・rename）まで
+  「スロット使用中」のまま。resume の安全性は C# 側の `ClaimedSlots` 検証が担保しており表示だけの問題。
+  パネル横断の push はパネルレジストリが必要になるため V1 では見送り（roadmap）。
+
+## 追加決定 D11: 共有ワークスペース化（D10 のスロット方式を即日改訂）（2026-07-07）
+
+**意図**: D10 のスロット方式（`sessions/<agentId>/` に履歴を蓄積し、resume はホームスロット限定）を
+ユーザーに説明したところ「スロット使用中」という状態の存在自体が複雑すぎるという指摘を受けた。
+振り返ると、占有概念（最小空き割当・`ClaimedSlots`・占有中 resume 不可・mid-launch の claim 遅延解放）は
+すべて「cwd がスロット単位」という前提から派生した複雑さで、レビューで塞いだ衝突バグ2件（H1・Codex HIGH）も
+この前提が生んだものだった。分離の実体は cwd ではなく (a) セッション ID（トランスクリプトは ID ごとの jsonl）と
+(b) `.mcp.json` の中身（ポート）なので、**cwd を1つにすれば占有概念ごと消せる**。
+
+### 判断と選択理由
+
+- **cwd を `~/.corhino/workspace/` に一本化**: `--resume` の cwd 制約が「どのセッションもこの cwd に属する」
+  ことで常に満たされ、resume はいつでも可能に。ブロック状態は「実行中」（同一トランスクリプトへの
+  二重 attach 防止）のみになり、ユーザーに見える概念が「セッション」だけになる。
+- **`.mcp.json` を cwd の外へ**（`~/.corhino/runtime/mcp-<port>-<agentId>.json`）: `--mcp-config` は
+  明示パスを取るのでそもそも cwd に置く必然が無かった。ポートがパネル一意なのでパネル間衝突も構造的に消える
+  （スロット方式で必要だった H1/Codex HIGH 対策のコードを全削除できた根拠）。
+- **担当レイヤをセッション紐付けに**（D7 の割当単位を改訂）: 共有 cwd では per-dir CLAUDE.md にレイヤを
+  焼き込めない。`--append-system-prompt`（interactive 対応をヘルプで確認）で spawn 毎に注入し、値は
+  `s-<sessionId 先頭8桁>` を**決定的に導出**——`{sessionId → layer}` の index 永続化が不要で、resume でも
+  会話が作業してきたレイヤがそのまま復元される。共有 CLAUDE.md はルールのみ持ち、値は持たない。
+- **agentId は純粋なルーティングキーに戻す**: 単調連番（`_nextAgentNum`）を復活。ディスク上の何にも
+  対応しないので、パネル間の重複も無害。`ClaimedSlots` は **`LiveSessionIds`**（プロセス全体の実行中
+  セッション集合）に置き換え——二重 resume 防止はセッション単位の関心事になった。mid-launch close の
+  遅延解放（Codex HIGH 対策）は同じ形でセッション keyed に移植（mid-spawn の claude と resume の
+  同時 attach を防ぐ）。
+- **旧 `~/.corhino/sessions/` は丸ごと放棄**（D10 の no-migration 方針を継続。スロット版は未リリース・
+  未コミットなので実質影響なし）。
+
+### 実装（Workspace.cs、CoRhinoPanel.cs、SessionsCatalog.cs、sessions-drawer.ts）
+
+- `EnsureSession(port, agentId, layer)` → `EnsureWorkspace()` + `EnsureAgentMcpConfig(port, agentId)` に分割。
+  CLAUDE.md テンプレは共有版（レイヤはシステムプロンプト参照と記載）。
+- スキャンは単一 project dir に（スロット列挙・`agent-<int>` フィルタ削除）。`SessionInfo.Slot`・
+  ドロワーのスロットバッジ・「スロット使用中」状態を削除。
+- プロトコルは不変（`onSessionsList` の行から slot/slotBusy が消えただけ）。
+- **検証**: `dotnet build` 0 警告 0 エラー・`tsc --noEmit` 0 エラー。実機確認は未（D10 と合わせて実施）。
+  `--append-system-prompt` の interactive での実効（レイヤ遵守）は実機確認項目に追加。

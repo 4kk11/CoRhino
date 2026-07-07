@@ -16,13 +16,13 @@ namespace CoRhino.Panel
     public class CoRhinoPanel : Eto.Forms.Panel
     {
         // One running claude agent inside this panel. Several can run in parallel —
-        // one per UI tab — all sharing the panel's single RhinoMCP host port. Each
-        // has its own PTY, its own session dir/cwd, and a private layer prefix so
-        // parallel agents write into disjoint Rhino layers.
+        // one per UI tab — all sharing the panel's single RhinoMCP host port AND
+        // the one workspace cwd (~/.corhino/workspace). Each has its own PTY and
+        // its own claude session (SessionId); the session's layer prefix
+        // (LayerFor) keeps parallel agents writing into disjoint Rhino layers.
         sealed class AgentTab
         {
             public required string AgentId;
-            public required string LayerPrefix;
             public PtySession Session = new();
             // True from spawn until StartSession finishes wiring. Counts as "alive"
             // so EnsureSessionAlive doesn't respawn a tab whose PTY is still coming up
@@ -38,19 +38,64 @@ namespace CoRhino.Panel
             // slightly BEFORE the actual spawn — so a write racing the launch can only
             // produce a false ⚠ (harmless; ⟳ converges), never a false ●.
             public DateTime SkillsLoadedAtUtc = DateTime.UtcNow;
+            // The claude session id this tab runs: a fresh GUID passed via
+            // --session-id on new spawns, or the resumed id (--resume). Known
+            // caveats (accepted for V1): /clear inside claude rotates the id
+            // silently, so this can go stale (a rename after /clear attaches to
+            // the old id); and on the no-claude shell fallback the id never
+            // materializes as a transcript (renaming such a tab leaves a harmless
+            // orphan in session-names.json).
+            public string? SessionId;
+            // True → spawn with --resume SessionId (Sessions Drawer resume);
+            // false → --session-id SessionId (fresh conversation).
+            public bool Resume;
+            // The user-given name from session-names.json, cached for label
+            // computation. Null → fall back to aiTitle / agentId in the UI.
+            public string? CustomName;
+            // Set by UnregisterTab when the tab is removed while its launch task
+            // is still running: the session's liveness claim must outlive the task
+            // (see UnregisterTab), and the task's finally releases it via this
+            // flag. UI thread writes, launch thread reads → volatile.
+            public volatile bool ReleaseSessionOnLaunchExit;
         }
+
+        // This session's Rhino layer prefix, derived deterministically from the
+        // sessionId so a resumed session gets the SAME layer it created objects
+        // in — no {sessionId → layer} index to persist. Injected per-spawn via
+        // --append-system-prompt (the shared-workspace CLAUDE.md can't carry a
+        // per-agent value).
+        static string LayerFor(string sessionId) =>
+            "s-" + sessionId.Substring(0, Math.Min(8, sessionId.Length));
 
         readonly WebView _webView;
         // agentId -> tab. Mutated only on the UI thread (message handlers and the
         // AsyncInvoke'd PTY callbacks), so no extra locking is needed.
         readonly Dictionary<string, AgentTab> _tabs = new();
-        // Monotonic agent counter; tab N is "agent-N". Never reused within a panel
-        // lifetime so two tabs never collide on a session dir or layer.
+        // Monotonic agent counter; tab N is "agent-N". Purely a UI/PTY routing
+        // key — with the shared workspace it maps to no on-disk resource, so
+        // collisions across panels are meaningless and a plain counter suffices.
         int _nextAgentNum = 1;
+        // Session ids currently attached to a live tab, across ALL panels in this
+        // process (per-doc panels share one process on macOS). Two claudes
+        // resuming the same session file concurrently would interleave one
+        // transcript — resumeSession must be able to see other panels' live
+        // sessions, so this is static. UI-thread-only (every mutation site runs
+        // on Eto's UI thread). Cross-PROCESS duplication (two Rhinos on Windows)
+        // remains a documented V1 limit.
+        static readonly HashSet<string> LiveSessionIds = new(StringComparer.Ordinal);
         bool _webReady;
         // Guards the reopen respawn path (EnsureSessionAlive) against the CoRhino
         // command firing again before a respawn finishes wiring.
         int _respawning;
+        // Single-flight gate for background sessions scans: drawer-open and
+        // tab-spawn can request scans concurrently, and overlapping scans could
+        // inject their results out of order. A request landing mid-scan sets
+        // _sessionsScanPending instead of starting a second scan — the in-flight
+        // scan may have already read the state the request wants reflected (e.g.
+        // a rename committed after the scan loaded session-names.json), so one
+        // more scan runs when it finishes.
+        int _sessionsScanning;
+        int _sessionsScanPending;
         // The document this panel instance is keyed to. Needed to close *this*
         // panel (per-doc) when every agent has exited.
         readonly uint _documentSerialNumber;
@@ -118,29 +163,79 @@ namespace CoRhino.Panel
             SpawnTab();
         }
 
-        // Allocate the next agent id, register its tab, announce it to the UI (if
-        // ready), and start its claude in the background. Returns the new tab.
+        // Register a tab: local map + the process-wide live-session set. The two
+        // must move together — RegisterTab/UnregisterTab are the only mutation
+        // sites.
+        void RegisterTab(AgentTab tab)
+        {
+            _tabs[tab.AgentId] = tab;
+            if (tab.SessionId != null) LiveSessionIds.Add(tab.SessionId);
+        }
+
+        void UnregisterTab(AgentTab tab)
+        {
+            _tabs.Remove(tab.AgentId);
+            if (tab.SessionId == null) return;
+            // A tab removed MID-LAUNCH keeps its session marked live until the
+            // launch task quiesces: its claude may be mid-spawn (--resume already
+            // attaching to the transcript), and letting another tab resume the
+            // same session in that window would put two claudes on one jsonl.
+            // The task's finally releases it via ReleaseSessionOnLaunchExit.
+            if (tab.Starting) tab.ReleaseSessionOnLaunchExit = true;
+            else LiveSessionIds.Remove(tab.SessionId);
+        }
+
+        // Allocate the next agent id, register its tab, announce it to the UI
+        // (if ready), and start its claude in the background. Returns the new tab.
         AgentTab SpawnTab()
         {
             var agentId = $"agent-{_nextAgentNum++}";
-            var tab = new AgentTab { AgentId = agentId, LayerPrefix = agentId, Starting = true };
-            _tabs[agentId] = tab;
+            var tab = new AgentTab
+            {
+                AgentId = agentId,
+                Starting = true,
+                SessionId = Guid.NewGuid().ToString(),
+            };
+            RegisterTab(tab);
             WireSession(tab);
 
-            Log.Write($"[CoRhino] Spawning tab {agentId} (layer {tab.LayerPrefix}).");
-            AnnounceTab(agentId);
+            Log.Write($"[CoRhino] Spawning tab {agentId} (session {tab.SessionId}, layer {LayerFor(tab.SessionId!)}).");
+            AnnounceTab(tab);
             LaunchSessionInBackground(tab);
+            RequestSessionsScan(); // live flags changed
             return tab;
         }
 
-        // Tell the UI to create an xterm for this agent. No-op until the WebView is
-        // ready; the 'ready' handler announces every existing tab once it boots.
-        void AnnounceTab(string agentId)
+        // Tell the UI to create an xterm for this agent. The payload carries the
+        // tab's sessionId (so the UI can send renameSession) and its initial label —
+        // delivered WITH creation, not as a follow-up onTabLabel, so a resumed tab
+        // never flashes "agent-N" first. No-op until the WebView is ready; the
+        // 'ready' handler announces every existing tab once it boots.
+        void AnnounceTab(AgentTab tab)
         {
             if (!_webReady) return;
-            var encoded = JsonSerializer.Serialize(agentId);
+            // customName rides along so the UI can prefill the rename input with
+            // the USER's name (never the auto title — committing that on blur
+            // would freeze it as a permanent custom name).
+            var encoded = JsonSerializer.Serialize(new
+            {
+                agentId = tab.AgentId,
+                sessionId = tab.SessionId,
+                label = ComputeLabel(tab),
+                customName = tab.CustomName,
+            }, JsonOptions);
             Application.Instance?.AsyncInvoke(() =>
                 _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onTabCreated({encoded})"));
+        }
+
+        // Tab label priority: user-given name > claude's auto title (from the last
+        // sessions scan) > the agent id.
+        string ComputeLabel(AgentTab tab)
+        {
+            if (!string.IsNullOrWhiteSpace(tab.CustomName)) return tab.CustomName!;
+            if (tab.SessionId != null && SessionsCatalog.TryGetKnownTitle(tab.SessionId, out var title))
+                return title;
+            return tab.AgentId;
         }
 
         // Subscribe to a tab's PtySession events. The *tab instance* is captured (not
@@ -172,7 +267,7 @@ namespace CoRhino.Panel
         {
             if (!_tabs.TryGetValue(tab.AgentId, out var current) || !ReferenceEquals(current, tab))
                 return;
-            _tabs.Remove(tab.AgentId);
+            UnregisterTab(tab);
             try { tab.Session.Dispose(); } catch { }
             if (_webReady)
             {
@@ -181,6 +276,8 @@ namespace CoRhino.Panel
             }
             if (_tabs.Count == 0)
                 CloseThisPanel();
+            else
+                RequestSessionsScan(); // the closed tab's session becomes resumable
         }
 
         void CloseThisPanel()
@@ -209,7 +306,18 @@ namespace CoRhino.Panel
                     Log.Write($"[CoRhino] StartSession({tab.AgentId}) unhandled: {ex.GetType().Name}: {ex.Message}");
                     Log.Write($"[CoRhino] Stack: {ex.StackTrace}");
                 }
-                finally { tab.Starting = false; }
+                finally
+                {
+                    tab.Starting = false;
+                    // Deferred liveness release for a tab that was removed
+                    // mid-launch (see UnregisterTab). Order matters:
+                    // Starting=false first, so an UnregisterTab racing this either
+                    // sees Starting==false and releases directly, or set the flag
+                    // we read here — no path leaks the claim. (Double-remove is
+                    // harmless; both run on the UI thread.)
+                    if (tab.ReleaseSessionOnLaunchExit && tab.SessionId != null)
+                        Application.Instance?.AsyncInvoke(() => LiveSessionIds.Remove(tab.SessionId));
+                }
             });
         }
 
@@ -235,16 +343,19 @@ namespace CoRhino.Panel
 
                 // Drop any dead tabs and wipe the terminal so the new claude paints
                 // onto a clean screen.
-                foreach (var t in _tabs.Values) t.Session.Dispose();
-                _tabs.Clear();
+                foreach (var t in _tabs.Values.ToList())
+                {
+                    t.Session.Dispose();
+                    UnregisterTab(t);
+                }
                 Application.Instance?.AsyncInvoke(() =>
                 {
                     if (_webReady)
                         _ = _webView.ExecuteScriptAsync("window.CoRhinoPanel?.onTabsReset()");
                 });
 
-                // Reuse agent-1 so the reopened session keeps its layer prefix, its
-                // seeded CLAUDE.md, and its claude history (cwd-keyed).
+                // Restart the counter — agent ids are pure routing keys now, and
+                // the fresh panel reads better starting at agent-1.
                 _nextAgentNum = 1;
                 SpawnTab();
             }
@@ -279,7 +390,7 @@ namespace CoRhino.Panel
             try
             {
                 var (claudePath, loginPath) = CliResolver.Resolve();
-                var cwd = Workspace.EnsureSession(_hostPort, tab.AgentId, tab.LayerPrefix);
+                var cwd = Workspace.EnsureWorkspace();
 
                 var env = new Dictionary<string, string>();
                 if (!string.IsNullOrEmpty(loginPath)) env["PATH"] = loginPath!;
@@ -293,9 +404,28 @@ namespace CoRhino.Panel
                 var claudeArgs = new List<string>
                 {
                     "--strict-mcp-config",
-                    "--mcp-config", Workspace.McpConfigPath(_hostPort, tab.AgentId),
+                    "--mcp-config", Workspace.EnsureAgentMcpConfig(_hostPort, tab.AgentId),
                     "--plugin-dir", Workspace.EnsureUserSkillsPlugin(),
                 };
+
+                if (tab.SessionId != null)
+                {
+                    // Pin the session identity: fresh tabs get their pre-generated
+                    // GUID (--session-id) so the tab↔transcript mapping is known
+                    // without parsing anything; resumed tabs reattach to the
+                    // existing id (--resume, no --fork-session — the same jsonl
+                    // keeps growing).
+                    claudeArgs.Add(tab.Resume ? "--resume" : "--session-id");
+                    claudeArgs.Add(tab.SessionId);
+                    // The parallel-agent layer, session-bound (see LayerFor). The
+                    // shared workspace CLAUDE.md holds the rules; this carries the
+                    // one per-session value it can't.
+                    claudeArgs.Add("--append-system-prompt");
+                    claudeArgs.Add(
+                        $"このセッションの担当 Rhino レイヤは `{LayerFor(tab.SessionId)}` です。" +
+                        "オブジェクトの作成・変更・削除はこのレイヤ配下のみで行ってください" +
+                        "（詳細は CLAUDE.md の「並列エージェントのルール」）。");
+                }
 
                 // CoRhino's bundled cc-plugin (onboarding skills like save-rhino-skill)
                 // ships next to the assembly, like web/. Skip silently if a stripped
@@ -409,7 +539,7 @@ namespace CoRhino.Panel
                         // then drain its buffered output onto the now-existing xterm.
                         foreach (var tab in _tabs.Values)
                         {
-                            AnnounceTab(tab.AgentId);
+                            AnnounceTab(tab);
                             FlushPending(tab);
                         }
                         break;
@@ -462,6 +592,23 @@ namespace CoRhino.Panel
                             reloadTab.Session.Write(Encoding.UTF8.GetBytes("/plugin reload-plugins\r"));
                             reloadTab.SkillsLoadedAtUtc = DateTime.UtcNow;
                             SendSkillsList(reloadTab);
+                        }
+                        break;
+
+                    case "listSessions":
+                        RequestSessionsScan();
+                        break;
+
+                    case "resumeSession":
+                        if (root.TryGetProperty("sessionId", out var resumeIdEl))
+                            ResumeSession(resumeIdEl.GetString());
+                        break;
+
+                    case "renameSession":
+                        if (root.TryGetProperty("sessionId", out var renameIdEl) &&
+                            root.TryGetProperty("name", out var nameEl))
+                        {
+                            RenameSession(renameIdEl.GetString(), nameEl.GetString());
                         }
                         break;
 
@@ -586,6 +733,130 @@ namespace CoRhino.Panel
             }
         }
 
+        // Kick a background sessions scan and push the result to the drawer.
+        // Scan() reads transcript files (MBs) — never on the UI thread.
+        void RequestSessionsScan()
+        {
+            if (System.Threading.Interlocked.Exchange(ref _sessionsScanning, 1) != 0)
+            {
+                // A scan is in flight; make sure one more runs after it (it may
+                // predate whatever change prompted this request).
+                System.Threading.Interlocked.Exchange(ref _sessionsScanPending, 1);
+                return;
+            }
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    var list = SessionsCatalog.Scan();
+                    Application.Instance?.AsyncInvoke(() => SendSessionsList(list));
+                }
+                catch (Exception ex)
+                {
+                    Log.Write($"[CoRhino] Sessions scan task failed: {ex.GetType().Name}: {ex.Message}");
+                }
+                finally
+                {
+                    System.Threading.Interlocked.Exchange(ref _sessionsScanning, 0);
+                    // Release-then-check: a request that raced the release either
+                    // won the fresh gate itself or left the pending flag for us.
+                    if (System.Threading.Interlocked.Exchange(ref _sessionsScanPending, 0) == 1)
+                        RequestSessionsScan();
+                }
+            });
+        }
+
+        // UI thread only: decorate the raw scan rows with tab state — the catalog
+        // stays tab-blind, and _tabs must not be read from the scan thread. The
+        // sessions list is tab-independent (unlike skills), so one push serves the
+        // whole drawer.
+        void SendSessionsList(IReadOnlyList<SessionInfo> list)
+        {
+            if (!_webReady) return;
+            var rows = list.Select(s => new
+            {
+                sessionId = s.SessionId,
+                title = s.Title,
+                customName = s.CustomName,
+                startedAt = s.StartedAtUtc.ToString("o"),
+                lastActivity = s.LastActivityUtc.ToString("o"),
+                // LiveSessionIds (not _tabs): a session live in ANOTHER panel of
+                // this process must grey out too.
+                isLive = LiveSessionIds.Contains(s.SessionId),
+            });
+            var json = JsonSerializer.Serialize(new { sessions = rows }, JsonOptions);
+            _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onSessionsList({json})");
+            // The scan may have surfaced an aiTitle for a live tab that had none —
+            // refresh labels so tabs pick it up without a rename. Idempotent.
+            foreach (var tab in _tabs.Values) PushTabLabel(tab);
+        }
+
+        void PushTabLabel(AgentTab tab)
+        {
+            if (!_webReady) return;
+            var encoded = JsonSerializer.Serialize(
+                new { agentId = tab.AgentId, label = ComputeLabel(tab), customName = tab.CustomName }, JsonOptions);
+            _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onTabLabel({encoded})");
+        }
+
+        // Reopen a past session in a new tab via --resume. Only sessionIds the
+        // last scan listed are accepted (allowlist — the WebView can't make us
+        // resume arbitrary ids), the transcript must still exist (a claude that
+        // dies instantly on a gone file would take the whole panel down with it if
+        // this were the only tab), and the session must not already be live in any
+        // panel of this process (two claudes on one transcript would interleave
+        // it). The UI greys live rows out — these checks are defense in depth.
+        void ResumeSession(string? sessionId)
+        {
+            if (sessionId == null || !SessionsCatalog.TryGetKnown(sessionId, out var jsonlPath))
+            {
+                Log.Write($"[CoRhino] resumeSession rejected (unknown id): {sessionId ?? "<null>"}");
+                return;
+            }
+            if (LiveSessionIds.Contains(sessionId))
+            {
+                Log.Write($"[CoRhino] resumeSession rejected (session already live): {sessionId}");
+                return;
+            }
+            if (!File.Exists(jsonlPath))
+            {
+                Log.Write($"[CoRhino] resumeSession rejected (transcript gone): {sessionId}");
+                RequestSessionsScan(); // the drawer's list is stale — refresh it
+                return;
+            }
+
+            var tab = new AgentTab
+            {
+                AgentId = $"agent-{_nextAgentNum++}",
+                Starting = true,
+                SessionId = sessionId,
+                Resume = true,
+                CustomName = SessionNames.LoadAll().TryGetValue(sessionId, out var n) ? n : null,
+            };
+            RegisterTab(tab);
+            WireSession(tab);
+            Log.Write($"[CoRhino] Resuming session {sessionId} in {tab.AgentId}.");
+            AnnounceTab(tab);
+            LaunchSessionInBackground(tab);
+            RequestSessionsScan(); // the session just went live
+        }
+
+        // Persist a user-given session name (empty reverts to the auto title) and
+        // reflect it on the live tab, if any, plus the drawer.
+        void RenameSession(string? sessionId, string? name)
+        {
+            if (string.IsNullOrEmpty(sessionId)) return;
+            SessionNames.Set(sessionId!, name);
+            var normalized = string.IsNullOrWhiteSpace(name) ? null : name!.Trim();
+            foreach (var tab in _tabs.Values)
+            {
+                if (tab.SessionId != sessionId) continue;
+                tab.CustomName = normalized;
+                PushTabLabel(tab);
+            }
+            RequestSessionsScan();
+        }
+
         void OnPtyData(AgentTab tab, byte[] data)
         {
             var s = Encoding.UTF8.GetString(data);
@@ -624,8 +895,14 @@ namespace CoRhino.Panel
                 RhinoDoc.NewDocument -= OnDocChangedRestartHost;
                 _skillsWatcher?.Dispose();
                 _skillsPushTimer?.Dispose();
-                foreach (var tab in _tabs.Values) tab.Session.Dispose();
-                _tabs.Clear();
+                // A background scan finishing after this point must not touch the
+                // disposed WebView; its AsyncInvoke'd push checks _webReady first.
+                _webReady = false;
+                foreach (var tab in _tabs.Values.ToList())
+                {
+                    tab.Session.Dispose();
+                    UnregisterTab(tab);
+                }
             }
             base.Dispose(disposing);
         }

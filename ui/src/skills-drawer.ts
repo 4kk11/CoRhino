@@ -23,6 +23,8 @@ export type SkillsDrawer = {
   handleSkillsList: (payload: SkillsListPayload) => void
   /** Active tab changed (switch/reset+respawn): re-request if open. */
   notifyActiveTabChanged: () => void
+  /** Close if open (drawer exclusivity). Fires onToggled like a user close. */
+  close: () => void
 }
 
 export function createSkillsDrawer(opts: {
@@ -30,8 +32,8 @@ export function createSkillsDrawer(opts: {
   openSkill: (path: string) => void
   reloadSkills: (agentId: string) => void
   getActiveAgentId: () => string | null
-  /** Called after open/close so main.ts can refit the active terminal. */
-  onToggled: () => void
+  /** Called after open/close so main.ts can refit and enforce exclusivity. */
+  onToggled: (open: boolean) => void
 }): SkillsDrawer {
   injectStyles()
 
@@ -76,7 +78,11 @@ export function createSkillsDrawer(opts: {
       const id = opts.getActiveAgentId()
       if (id) opts.requestList(id)
     }
-    opts.onToggled()
+    opts.onToggled(open)
+  }
+
+  function close() {
+    if (open) toggle()
   }
 
   function handleSkillsList(payload: SkillsListPayload) {
@@ -152,7 +158,7 @@ export function createSkillsDrawer(opts: {
     return row
   }
 
-  return { root, button, handleSkillsList, notifyActiveTabChanged }
+  return { root, button, handleSkillsList, notifyActiveTabChanged, close }
 }
 
 function injectStyles() {
