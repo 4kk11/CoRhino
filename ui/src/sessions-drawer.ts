@@ -12,6 +12,7 @@ export type SessionInfo = {
   customName: string | null
   startedAt: string // ISO-8601 UTC
   lastActivity: string // ISO-8601 UTC
+  cli: 'claude' | 'codex' // which CLI recorded it (row badge, matches tab badges)
   isLive: boolean // a live tab (any panel) runs this very session
 }
 
@@ -104,6 +105,12 @@ export function createSessionsDrawer(opts: {
 
     const head = document.createElement('div')
     head.className = 'ss-rowhead'
+    // CLI badge, same glyphs/colors as the tab bar (styles from main.ts).
+    const badge = document.createElement('span')
+    badge.className = `clibadge ${session.cli === 'codex' ? 'codex' : 'claude'}`
+    badge.textContent = session.cli === 'codex' ? '◆' : '●'
+    badge.title = session.cli === 'codex' ? 'Codex' : 'Claude Code'
+    head.appendChild(badge)
     const name = document.createElement('span')
     name.className = 'ss-name'
     name.textContent = session.customName ?? session.title

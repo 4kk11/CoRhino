@@ -26,10 +26,14 @@ namespace CoRhino.Panel
         {
             public required string AgentId;
             // The CLI this tab runs. Every per-CLI concern (launch args, session
-            // identity, layer strategy) goes through this adapter. Only Claude is
-            // registered so far — every tab runs it.
+            // identity, layer strategy) goes through this adapter.
             public IAgentCli Cli = AgentCliRegistry.Claude;
             public PtySession Session = new();
+            // When the tab was created (UI thread), slightly BEFORE its process
+            // spawns. Anchors the pending-codex drawer guard: while this tab's
+            // session id is undiscovered, codex rollouts at least this fresh
+            // may be *its* live session and must not be resumable/deletable.
+            public readonly DateTime CreatedAtUtc = DateTime.UtcNow;
             // True from spawn until StartSession finishes wiring. Counts as "alive"
             // so EnsureSessionAlive doesn't respawn a tab whose PTY is still coming up
             // (IsRunning is false until SpawnAsync returns). Set on the background
@@ -56,6 +60,12 @@ namespace CoRhino.Panel
             // Resolved ONCE at tab creation via the adapter (see IAgentCli.LayerTokenFor)
             // and threaded through StartSession's SpawnContext.
             public string? LayerToken;
+            // Cancels this tab's session-id discovery when the tab is removed —
+            // a dead tab's poll must not claim a rollout that belongs to the
+            // next codex tab (the adapter turns cancellation into burn mode).
+            // Created on the UI thread at tab creation (codex only), cancelled
+            // in UnregisterTab.
+            public System.Threading.CancellationTokenSource? DiscoveryCts;
             // True → spawn with --resume SessionId (Sessions Drawer resume);
             // false → --session-id SessionId (fresh conversation).
             public bool Resume;
@@ -85,6 +95,17 @@ namespace CoRhino.Panel
         // on Eto's UI thread). Cross-PROCESS duplication (two Rhinos on Windows)
         // remains a documented V1 limit.
         static readonly HashSet<string> LiveSessionIds = new(StringComparer.Ordinal);
+        // Codex tabs whose session id is still undiscovered (or never resolved:
+        // discovery timeout keeps the tab here for its whole life). Their live
+        // session cannot be in LiveSessionIds yet, but its rollout IS on disk
+        // and would otherwise list as resumable/deletable — any codex session
+        // at least as fresh as the oldest pending tab is treated as live until
+        // this set drains. Static + UI-thread-only, like LiveSessionIds.
+        static readonly HashSet<AgentTab> PendingCodexTabs = new();
+        // Codex sessions with a `codex delete` in flight (bounded ~10 s on a
+        // background thread). Reserved here so the drawer row stays blocked and
+        // resume is rejected until the outcome lands. UI-thread-only.
+        static readonly HashSet<string> DeletingSessionIds = new(StringComparer.Ordinal);
         bool _webReady;
         // Guards the reopen respawn path (EnsureSessionAlive) against the CoRhino
         // command firing again before a respawn finishes wiring.
@@ -177,6 +198,8 @@ namespace CoRhino.Panel
         void UnregisterTab(AgentTab tab)
         {
             _tabs.Remove(tab.AgentId);
+            PendingCodexTabs.Remove(tab);
+            try { tab.DiscoveryCts?.Cancel(); } catch (ObjectDisposedException) { }
             if (tab.SessionId == null) return;
             // A tab removed MID-LAUNCH keeps its session marked live until the
             // launch task quiesces: its claude may be mid-spawn (--resume already
@@ -188,23 +211,30 @@ namespace CoRhino.Panel
         }
 
         // Allocate the next agent id, register its tab, announce it to the UI
-        // (if ready), and start its claude in the background. Returns the new tab.
-        AgentTab SpawnTab()
+        // (if ready), and start its agent CLI in the background. Returns the new tab.
+        AgentTab SpawnTab(AgentCliKind kind = AgentCliKind.Claude)
         {
-            var cli = AgentCliRegistry.Claude;
+            var cli = AgentCliRegistry.For(kind);
             var agentId = $"agent-{_nextAgentNum++}";
             var tab = new AgentTab
             {
                 AgentId = agentId,
                 Cli = cli,
                 Starting = true,
-                SessionId = Guid.NewGuid().ToString(),
+                // Claude pins its id up front (--session-id); codex generates its
+                // own — discovery fills SessionId in after launch.
+                SessionId = kind == AgentCliKind.Claude ? Guid.NewGuid().ToString() : null,
             };
             tab.LayerToken = cli.LayerTokenFor(tab.SessionId);
+            if (tab.SessionId == null)
+            {
+                tab.DiscoveryCts = new System.Threading.CancellationTokenSource();
+                PendingCodexTabs.Add(tab);
+            }
             RegisterTab(tab);
             WireSession(tab);
 
-            Log.Write($"[CoRhino] Spawning tab {agentId} ({cli.BinaryName}, session {tab.SessionId}, layer {tab.LayerToken}).");
+            Log.Write($"[CoRhino] Spawning tab {agentId} ({cli.BinaryName}, session {tab.SessionId ?? "<pending>"}, layer {tab.LayerToken}).");
             AnnounceTab(tab);
             LaunchSessionInBackground(tab);
             RequestSessionsScan(); // live flags changed
@@ -228,18 +258,29 @@ namespace CoRhino.Panel
                 sessionId = tab.SessionId,
                 label = ComputeLabel(tab),
                 customName = tab.CustomName,
+                cli = CliId(tab),
             }, JsonOptions);
             Application.Instance?.AsyncInvoke(() =>
                 _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onTabCreated({encoded})"));
         }
 
-        // Tab label priority: user-given name > claude's auto title (from the last
+        // The wire id of a CLI ("claude" / "codex") — the protocol's enum,
+        // shared by onTabCreated / onCliAvailability / onSessionsList / createTab.
+        static string CliId(AgentTab tab) => CliId(tab.Cli.Kind);
+        static string CliId(AgentCliKind kind) => kind == AgentCliKind.Codex ? "codex" : "claude";
+
+        // Tab label priority: user-given name > the CLI's auto title (from the last
         // sessions scan) > the agent id.
         string ComputeLabel(AgentTab tab)
         {
             if (!string.IsNullOrWhiteSpace(tab.CustomName)) return tab.CustomName!;
-            if (tab.SessionId != null && SessionsCatalog.TryGetKnownTitle(tab.SessionId, out var title))
-                return title;
+            if (tab.SessionId != null)
+            {
+                var found = tab.Cli.Kind == AgentCliKind.Codex
+                    ? CodexSessionsCatalog.TryGetKnownTitle(tab.SessionId, out var title)
+                    : SessionsCatalog.TryGetKnownTitle(tab.SessionId, out title);
+                if (found) return title;
+            }
             return tab.AgentId;
         }
 
@@ -428,18 +469,46 @@ namespace CoRhino.Panel
                 }
                 else
                 {
-                    Log.Write($"[CoRhino] Spawning {cliPath} in {cwd}");
-                    if (isWindows && !cliPath!.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                    // Session-id discovery matches "a fresh rollout in our cwd" —
+                    // with all codex tabs sharing one cwd, two in-flight launches
+                    // would be indistinguishable and could swap ids. The gate
+                    // serializes [launch → rollout claimed] process-wide so at
+                    // most one unclaimed matching rollout exists at a time.
+                    // Discovery lands in seconds typically; a second + click just
+                    // starts a beat later.
+                    var holdsDiscoveryGate = tab.SessionId == null;
+                    if (holdsDiscoveryGate)
+                        await CodexSpawnGate.WaitAsync().ConfigureAwait(false);
+                    try
                     {
-                        // Only .exe can be launched directly by CreateProcess on Windows.
-                        // .cmd / .bat / extensionless shell-shims (npm, fnm) must go through cmd.exe.
-                        await tab.Session.StartAsync("cmd.exe", new[] { "/c", cliPath! }.Concat(args).ToArray(), cwd, env).ConfigureAwait(false);
+                        Log.Write($"[CoRhino] Spawning {cliPath} in {cwd}");
+                        if (isWindows && !cliPath!.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Only .exe can be launched directly by CreateProcess on Windows.
+                            // .cmd / .bat / extensionless shell-shims (npm, fnm) must go through cmd.exe.
+                            await tab.Session.StartAsync("cmd.exe", new[] { "/c", cliPath! }.Concat(args).ToArray(), cwd, env).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await tab.Session.StartAsync(cliPath!, args, cwd, env).ConfigureAwait(false);
+                        }
+                        Log.Write($"[CoRhino] {cli.BinaryName} spawned in {cwd}");
+
+                        // Codex generates its own session id — recover it from the
+                        // rollout store so the tab becomes resumable and its layer
+                        // pairing persists. Fire-and-forget: Starting must clear as
+                        // soon as the PTY is up, not after a (worst-case 15 s) poll.
+                        // The discovery task takes over the gate and releases it.
+                        if (holdsDiscoveryGate)
+                        {
+                            _ = System.Threading.Tasks.Task.Run(() => DiscoverSessionId(tab, ctx));
+                            holdsDiscoveryGate = false; // ownership handed off
+                        }
                     }
-                    else
+                    finally
                     {
-                        await tab.Session.StartAsync(cliPath!, args, cwd, env).ConfigureAwait(false);
+                        if (holdsDiscoveryGate) CodexSpawnGate.Release(); // spawn threw before handoff
                     }
-                    Log.Write($"[CoRhino] {cli.BinaryName} spawned in {cwd}");
                 }
             }
             catch (Exception ex)
@@ -452,6 +521,82 @@ namespace CoRhino.Panel
                 // panel if it was the only one) rather than leaving a dead tab behind.
                 Application.Instance?.AsyncInvoke(() => RemoveTab(tab));
             }
+        }
+
+        // Serializes codex [launch → session-id claimed] process-wide (static:
+        // macOS runs every panel in one process and they all share the
+        // workspace cwd). See the spawn site for why.
+        static readonly System.Threading.SemaphoreSlim CodexSpawnGate = new(1, 1);
+
+        // Background side of codex session-id discovery; hands the result to the
+        // UI thread. The TAB INSTANCE is captured — a stale discovery (tab since
+        // removed / id reused) must not touch the tab that now holds the id.
+        // Owns the spawn gate (handed over by StartSession) and ALWAYS releases it.
+        async System.Threading.Tasks.Task DiscoverSessionId(AgentTab tab, SpawnContext ctx)
+        {
+            try
+            {
+                var ct = tab.DiscoveryCts?.Token ?? System.Threading.CancellationToken.None;
+                // Cancellation is handled INSIDE the adapter (burn mode — the
+                // rollout must still be claimed), so a cancelled discovery
+                // returns null rather than throwing.
+                var sessionId = await tab.Cli.DiscoverSessionIdAsync(ctx, ct).ConfigureAwait(false);
+                if (sessionId == null) return; // logged by the adapter; tab stays usable
+                Application.Instance?.AsyncInvoke(() => OnSessionIdDiscovered(tab, sessionId));
+            }
+            catch (Exception ex)
+            {
+                Log.Write($"[CoRhino] Session id discovery failed ({tab.AgentId}): {ex.GetType().Name}: {ex.Message}");
+            }
+            finally
+            {
+                CodexSpawnGate.Release();
+            }
+        }
+
+        // UI thread only. Wires a discovered codex session id into the tab:
+        // liveness (resume guard), the persisted layer pairing, and the UI's
+        // copy of the id (rename needs it).
+        void OnSessionIdDiscovered(AgentTab tab, string sessionId)
+        {
+            // The session exists on disk with this layer regardless of whether
+            // the tab survived — persist the pairing so a later resume restores
+            // the same layer.
+            if (tab.LayerToken != null)
+                SessionLayers.Set(sessionId, tab.LayerToken);
+
+            if (!_tabs.TryGetValue(tab.AgentId, out var current) || !ReferenceEquals(current, tab))
+                return; // tab gone; nothing live to mark
+            tab.SessionId = sessionId;
+            PendingCodexTabs.Remove(tab); // identity known — the precise guard takes over
+            LiveSessionIds.Add(sessionId);
+            tab.CustomName = SessionNames.LoadAll().TryGetValue(sessionId, out var n) ? n : null;
+            if (_webReady)
+            {
+                var encoded = JsonSerializer.Serialize(
+                    new { agentId = tab.AgentId, sessionId }, JsonOptions);
+                _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onTabSession({encoded})");
+            }
+            PushTabLabel(tab);
+        }
+
+        // Probe which agent CLIs exist on PATH and tell the UI (the + menu greys
+        // out missing ones). Once per 'ready' — the probe forks a login shell
+        // per CLI, so it must not run per menu open; a CLI installed later is
+        // picked up when the panel reloads (spawns themselves always re-resolve).
+        void PushCliAvailability()
+        {
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var claude = CliResolver.Resolve(AgentCliRegistry.Claude.BinaryName).cliPath != null;
+                var codex = CliResolver.Resolve(AgentCliRegistry.Codex.BinaryName).cliPath != null;
+                Application.Instance?.AsyncInvoke(() =>
+                {
+                    if (!_webReady) return;
+                    var encoded = JsonSerializer.Serialize(new { claude, codex }, JsonOptions);
+                    _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onCliAvailability({encoded})");
+                });
+            });
         }
 
         void EnsureHostMcpStarted()
@@ -521,10 +666,15 @@ namespace CoRhino.Panel
                             AnnounceTab(tab);
                             FlushPending(tab);
                         }
+                        PushCliAvailability();
                         break;
 
                     case "createTab":
-                        SpawnTab();
+                        // Optional cli field ("claude" | "codex"); absent → claude.
+                        SpawnTab(
+                            root.TryGetProperty("cli", out var cliEl) && cliEl.GetString() == "codex"
+                                ? AgentCliKind.Codex
+                                : AgentCliKind.Claude);
                         break;
 
                     case "closeTab":
@@ -552,7 +702,9 @@ namespace CoRhino.Panel
                         break;
 
                     case "listSkills":
-                        if (TryGetTab(root, out var listTab))
+                        // Codex tabs have no skill loading; the UI disables ⚡ for
+                        // them — this guard is defense in depth.
+                        if (TryGetTab(root, out var listTab) && listTab!.Cli.SupportsSkillsDrawer)
                             SendSkillsList(listTab!);
                         break;
 
@@ -566,7 +718,8 @@ namespace CoRhino.Panel
                         // load timestamp, and re-send the list so ⚠ dots clear. A
                         // plain UI-side stdin write couldn't advance the timestamp —
                         // that's why this is its own message.
-                        if (TryGetTab(root, out var reloadTab) && reloadTab!.Session.IsRunning)
+                        if (TryGetTab(root, out var reloadTab) && reloadTab!.Cli.SupportsSkillsDrawer &&
+                            reloadTab.Session.IsRunning)
                         {
                             reloadTab.Session.Write(Encoding.UTF8.GetBytes("/plugin reload-plugins\r"));
                             reloadTab.SkillsLoadedAtUtc = DateTime.UtcNow;
@@ -732,7 +885,12 @@ namespace CoRhino.Panel
             {
                 try
                 {
-                    var list = SessionsCatalog.Scan();
+                    // Both CLIs' catalogs, one merged list — the drawer shows a
+                    // single timeline with per-row CLI badges.
+                    var list = SessionsCatalog.Scan()
+                        .Concat(CodexSessionsCatalog.Scan())
+                        .OrderByDescending(s => s.LastActivityUtc)
+                        .ToList();
                     Application.Instance?.AsyncInvoke(() => SendSessionsList(list));
                 }
                 catch (Exception ex)
@@ -764,15 +922,37 @@ namespace CoRhino.Panel
                 customName = s.CustomName,
                 startedAt = s.StartedAtUtc.ToString("o"),
                 lastActivity = s.LastActivityUtc.ToString("o"),
-                // LiveSessionIds (not _tabs): a session live in ANOTHER panel of
-                // this process must grey out too.
-                isLive = LiveSessionIds.Contains(s.SessionId),
+                cli = CliId(s.Cli),
+                // Blocked = attached to a live tab in ANY panel of this process,
+                // possibly-live (pending codex id), or mid-delete — see
+                // IsSessionBlocked.
+                isLive = IsSessionBlocked(s.SessionId, s.Cli, s.LastActivityUtc),
             });
             var json = JsonSerializer.Serialize(new { sessions = rows }, JsonOptions);
             _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onSessionsList({json})");
             // The scan may have surfaced an aiTitle for a live tab that had none —
             // refresh labels so tabs pick it up without a rename. Idempotent.
             foreach (var tab in _tabs.Values) PushTabLabel(tab);
+        }
+
+        // UI thread only. A codex session at least as fresh as the oldest
+        // pending (id-undiscovered) codex tab might BE that tab's live session —
+        // nothing can prove otherwise until the id lands, so err on blocking.
+        static DateTime? PendingCodexCutoffUtc() =>
+            PendingCodexTabs.Count == 0 ? null : PendingCodexTabs.Min(t => t.CreatedAtUtc).AddSeconds(-5);
+
+        // UI thread only: the single definition of "hands off this session",
+        // shared by the drawer decoration and the resume/delete guards.
+        static bool IsSessionBlocked(string sessionId, AgentCliKind cli, DateTime lastActivityUtc)
+        {
+            if (LiveSessionIds.Contains(sessionId)) return true;
+            if (DeletingSessionIds.Contains(sessionId)) return true;
+            if (cli == AgentCliKind.Codex)
+            {
+                var cutoff = PendingCodexCutoffUtc();
+                if (cutoff != null && lastActivityUtc >= cutoff) return true;
+            }
+            return false;
         }
 
         void PushTabLabel(AgentTab tab)
@@ -792,36 +972,50 @@ namespace CoRhino.Panel
         // it). The UI greys live rows out — these checks are defense in depth.
         void ResumeSession(string? sessionId)
         {
-            if (sessionId == null || !SessionsCatalog.TryGetKnown(sessionId, out var jsonlPath))
+            // Whichever CLI's catalog listed the id owns the resume; ids are
+            // UUIDs on both sides, so the two allowlists cannot collide.
+            IAgentCli cli;
+            string transcriptPath;
+            if (sessionId != null && SessionsCatalog.TryGetKnown(sessionId, out var jsonlPath))
+            {
+                cli = AgentCliRegistry.Claude;
+                transcriptPath = jsonlPath;
+            }
+            else if (sessionId != null && CodexSessionsCatalog.TryGetKnown(sessionId, out var rolloutPath))
+            {
+                cli = AgentCliRegistry.Codex;
+                transcriptPath = rolloutPath;
+            }
+            else
             {
                 Log.Write($"[CoRhino] resumeSession rejected (unknown id): {sessionId ?? "<null>"}");
                 return;
             }
-            if (LiveSessionIds.Contains(sessionId))
-            {
-                Log.Write($"[CoRhino] resumeSession rejected (session already live): {sessionId}");
-                return;
-            }
-            if (!File.Exists(jsonlPath))
+            if (!File.Exists(transcriptPath))
             {
                 Log.Write($"[CoRhino] resumeSession rejected (transcript gone): {sessionId}");
                 RequestSessionsScan(); // the drawer's list is stale — refresh it
+                return;
+            }
+            if (IsSessionBlocked(sessionId!, cli.Kind, File.GetLastWriteTimeUtc(transcriptPath)))
+            {
+                Log.Write($"[CoRhino] resumeSession rejected (session live/pending/deleting): {sessionId}");
                 return;
             }
 
             var tab = new AgentTab
             {
                 AgentId = $"agent-{_nextAgentNum++}",
-                Cli = AgentCliRegistry.Claude, // the claude catalog listed it
+                Cli = cli,
                 Starting = true,
                 SessionId = sessionId,
                 Resume = true,
-                CustomName = SessionNames.LoadAll().TryGetValue(sessionId, out var n) ? n : null,
+                CustomName = SessionNames.LoadAll().TryGetValue(sessionId!, out var n) ? n : null,
             };
-            tab.LayerToken = tab.Cli.LayerTokenFor(sessionId);
+            tab.LayerToken = tab.Cli.LayerTokenFor(sessionId!);
             RegisterTab(tab);
             WireSession(tab);
-            Log.Write($"[CoRhino] Resuming session {sessionId} in {tab.AgentId}.");
+            Log.Write($"[CoRhino] Resuming {cli.BinaryName} session {sessionId} in {tab.AgentId}.");
             AnnounceTab(tab);
             LaunchSessionInBackground(tab);
             RequestSessionsScan(); // the session just went live
@@ -835,30 +1029,66 @@ namespace CoRhino.Panel
         // tab in this process.
         void DeleteSession(string? sessionId)
         {
-            if (sessionId == null || !SessionsCatalog.TryGetKnown(sessionId, out var jsonlPath))
+            if (sessionId == null)
             {
-                Log.Write($"[CoRhino] deleteSession rejected (unknown id): {sessionId ?? "<null>"}");
+                Log.Write("[CoRhino] deleteSession rejected (unknown id): <null>");
                 return;
             }
-            if (LiveSessionIds.Contains(sessionId))
+            if (SessionsCatalog.TryGetKnown(sessionId, out var jsonlPath))
             {
-                Log.Write($"[CoRhino] deleteSession rejected (session live): {sessionId}");
-                return;
+                if (IsSessionBlocked(sessionId, AgentCliKind.Claude, DateTime.MinValue))
+                {
+                    Log.Write($"[CoRhino] deleteSession rejected (session live): {sessionId}");
+                    return;
+                }
+                // Claude stores plain files — delete them directly.
+                try
+                {
+                    if (File.Exists(jsonlPath)) File.Delete(jsonlPath);
+                    // Subagent transcripts live in a sibling dir named after the session.
+                    var subagentsDir = Path.Combine(Path.GetDirectoryName(jsonlPath) ?? string.Empty, sessionId);
+                    if (Directory.Exists(subagentsDir)) Directory.Delete(subagentsDir, recursive: true);
+                    SessionNames.Set(sessionId, null); // drop its custom name too
+                    Log.Write($"[CoRhino] Deleted session {sessionId}.");
+                }
+                catch (Exception ex)
+                {
+                    Log.Write($"[CoRhino] deleteSession failed ({sessionId}): {ex.GetType().Name}: {ex.Message}");
+                }
+                RequestSessionsScan();
             }
-            try
+            else if (CodexSessionsCatalog.TryGetKnown(sessionId, out var rolloutPath))
             {
-                if (File.Exists(jsonlPath)) File.Delete(jsonlPath);
-                // Subagent transcripts live in a sibling dir named after the session.
-                var subagentsDir = Path.Combine(Path.GetDirectoryName(jsonlPath) ?? string.Empty, sessionId);
-                if (Directory.Exists(subagentsDir)) Directory.Delete(subagentsDir, recursive: true);
-                SessionNames.Set(sessionId, null); // drop its custom name too
-                Log.Write($"[CoRhino] Deleted session {sessionId}.");
+                var mtime = File.Exists(rolloutPath) ? File.GetLastWriteTimeUtc(rolloutPath) : DateTime.MinValue;
+                if (IsSessionBlocked(sessionId, AgentCliKind.Codex, mtime))
+                {
+                    Log.Write($"[CoRhino] deleteSession rejected (session live/pending/deleting): {sessionId}");
+                    return;
+                }
+                // Codex keeps an index and archive around its rollouts — deletion
+                // goes through `codex delete <id>` so that bookkeeping stays
+                // consistent. The CLI call blocks (bounded) → background thread;
+                // the id is reserved in DeletingSessionIds until the outcome lands
+                // (blocks resume for the window), and on failure the row stays
+                // listed (nothing silently vanishes).
+                DeletingSessionIds.Add(sessionId);
+                RequestSessionsScan(); // re-render now so the row blocks immediately
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    var deleted = CodexSessionsCatalog.Delete(sessionId);
+                    if (deleted)
+                        SessionNames.Set(sessionId, null); // drop its custom name too
+                    Application.Instance?.AsyncInvoke(() =>
+                    {
+                        DeletingSessionIds.Remove(sessionId);
+                        RequestSessionsScan();
+                    });
+                });
             }
-            catch (Exception ex)
+            else
             {
-                Log.Write($"[CoRhino] deleteSession failed ({sessionId}): {ex.GetType().Name}: {ex.Message}");
+                Log.Write($"[CoRhino] deleteSession rejected (unknown id): {sessionId}");
             }
-            RequestSessionsScan();
         }
 
         // Persist a user-given session name (empty reverts to the auto title) and

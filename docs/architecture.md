@@ -246,10 +246,16 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
   C# はアクティブタブを知らない——UI 側が自分のアクティブタブと一致する payload だけ描画し、
   ドロワー閉時は無視する（開閉状態を C# と同期しない）。パネル `Dispose` で watcher/timer とも破棄。
 
-#### Sessions Drawer の配線（`SessionsCatalog.cs` + `SessionNames.cs`）
+#### Sessions Drawer の配線（`SessionsCatalog.cs` + `CodexSessionsCatalog.cs` + `SessionNames.cs`）
 
 過去セッション一覧ドロワー（→ 2.9）の C# 側。SkillsCatalog と同じ規律で分離されている:
 
+- `CodexSessionsCatalog.Scan()` … codex の rollout 保存先（`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`）を
+  全走査し、**1 行目 `session_meta.cwd` == 共有 workspace** のものだけに絞る（head facts は path キーで
+  キャッシュ、mtime が動いたら再読）。タイトルは `session_index.jsonl` の `thread_name`（遅延・欠落あり →
+  ベストエフォート）> 先頭ユーザープロンプト > id 短縮。空セッション（`user_message` 行なし）は除外。
+  allowlist（`TryGetKnown`）・BG スレッド規律は claude 側と同型。削除は `codex delete <id>`（`Delete()`、
+  bounded 10s）。`SendSessionsList` が両カタログのマージ + `cli` バッジ付与を行う。
 - `SessionsCatalog.Scan()` … 共有ワークスペースの cwd→slug 変換（`ProjectSlug`、ASCII 英数字以外→`-`。
   Windows は未検証）で得た**単一の** `~/.claude/projects/<slug>/` の**トップレベル** `*.jsonl` だけを列挙
   （サブエージェントのトランスクリプトは `<id>/subagents/` サブ dir に隔離されている）。head 64KB から
@@ -500,9 +506,9 @@ CoRhino は内部に4つの通信境界を持つ。バグはたいていこの�
 | `openSkill` | `path` | `IsKnownSkillPath` 検証 → `Process.Start`（UseShellExecute）で SKILL.md を開く |
 | `reloadSkills` | `agentId` | 該当タブの PTY へ `/plugin reload-plugins` 注入 → `SkillsLoadedAtUtc=now` → `onSkillsList` 再送 |
 | `listSessions` | — | `RequestSessionsScan()`（BG スキャン → `onSessionsList`） |
-| `resumeSession` | `sessionId` | allowlist＋jsonl 存在＋非実行中を検証 → 新規タブに `--resume` で spawn |
+| `resumeSession` | `sessionId` | 両カタログ横断の allowlist ＋ transcript 存在 ＋ 非実行中を検証 → 該当 CLI の新規タブとして resume spawn |
 | `renameSession` | `sessionId, name` | `SessionNames.Set`（空で削除）→ live タブへ `onTabLabel` → 一覧再送 |
-| `deleteSession` | `sessionId` | allowlist＋非実行中を検証 → jsonl + subagents dir + 名前を削除 → 一覧再送 |
+| `deleteSession` | `sessionId` | allowlist＋非実行中を検証 → claude: jsonl + subagents dir を直接削除 / codex: BG で `codex delete <id>`（索引整合のため）→ 名前削除 → 一覧再送 |
 | `debug` | `message` | `Log.Write("[Claude/UI] …")` |
 
 **C# → UI（`ExecuteScriptAsync` で `window.CoRhinoPanel` を呼ぶ）**

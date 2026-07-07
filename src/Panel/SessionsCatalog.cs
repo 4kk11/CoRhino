@@ -9,19 +9,21 @@ using System.Text.Json;
 namespace CoRhino.Panel
 {
     /// <summary>
-    /// One past claude session as shown in the Sessions Drawer. Raw facts only —
-    /// live decoration happens in CoRhinoPanel on the UI thread, where the tab
-    /// state is readable.
+    /// One past session as shown in the Sessions Drawer, from either CLI's
+    /// catalog. Raw facts only — live decoration happens in CoRhinoPanel on the
+    /// UI thread, where the tab state is readable.
     /// </summary>
     sealed class SessionInfo
     {
         public required string SessionId { get; init; }
-        /// <summary>Auto title: last ai-title, else last-prompt, else first user prompt, else id prefix.</summary>
+        /// <summary>Auto title (claude: last ai-title/prompt; codex: thread_name/first prompt), else id prefix.</summary>
         public required string Title { get; init; }
         /// <summary>User-given name from session-names.json, or null.</summary>
         public string? CustomName { get; init; }
         public required DateTime StartedAtUtc { get; init; }
         public required DateTime LastActivityUtc { get; init; }
+        /// <summary>Which CLI recorded this session (drives the drawer badge and resume dispatch).</summary>
+        public CoRhino.Cli.AgentCliKind Cli { get; init; } = CoRhino.Cli.AgentCliKind.Claude;
     }
 
     /// <summary>

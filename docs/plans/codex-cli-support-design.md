@@ -235,6 +235,18 @@ SendSessionsList:
 3. 表示名の優先順位: 手動名（`SessionNames`、claude と共通のストア） > `thread_name` > 先頭ユーザープロンプト（rollout から取得できれば） > id 短縮
 4. 空セッション除外・実行中装飾は claude と同じ規律（装飾は UI スレッドの `SendSessionsList` が付与）
 
+**ブロック判定の一元化（Phase 3 レビューで追加）**: 「触ってはいけないセッション」の定義は単一関数
+`IsSessionBlocked(sessionId, cli, lastActivityUtc)` に集約し、drawer 装飾（isLive）と resume / delete
+ガードの三箇所すべてが同じ判定を通る。ブロック条件は:
+
+- `LiveSessionIds`（タブに紐付いた実行中セッション）
+- `DeletingSessionIds`（`codex delete` 実行中の予約。UI スレッドで delete 開始前に登録・完了時に解除。
+  最大 ~10s の BG 実行中に同じ行を resume できてしまう race を塞ぐ）
+- **codex の pending カットオフ**: ID 未発見（発見タイムアウト含む）の実行中 codex タブが存在する間、
+  その最古タブの作成時刻 −5s 以降に更新された codex セッションはすべてブロック。ID が無い実行中
+  セッションは `LiveSessionIds` に入れられず、rollout はディスクに実在して一覧に載ってしまうため
+  （証明できないものは触らせない、の保守側に倒す。発見成功で即解除される）
+
 **操作**:
 
 | 操作 | claude（既存） | codex |

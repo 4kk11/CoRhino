@@ -120,25 +120,33 @@ localhost:10590 に立て、`codex exec`（codex-cli 0.142.5）で各構成を�
 
 ---
 
-## Phase 3: Sessions Drawer の codex 対応
+## Phase 3: Sessions Drawer の codex 対応 ✅ コード完了（2026-07-07・実機スモークのみ残）
 
-- [ ] **3-1**: `src/Panel/CodexSessionsCatalog.cs` — `Scan()`
-  - `session_index.jsonl` 索引化 + rollout 1 行目走査（cwd フィルタ、`(path, mtime)` キャッシュ）
-  - 表示名の優先順位: 手動名 > `thread_name` > 先頭プロンプト > id 短縮。空セッション除外
-  - allowlist（`TryGetKnown` 同型）
-- [ ] **3-2**: `SendSessionsList` のマージ（claude + codex、`cli` フィールド付与、updated 降順の一体ソート）
-  - BG スキャンの single-flight 規律は既存 `RequestSessionsScan` に相乗り
-- [ ] **3-3**: resume の CLI 振り分け
-  - `resumeSession {sessionId}` → カタログ横断で Kind 特定 → 該当アダプタで新規タブ spawn
-  - spawn 前の rollout / jsonl 存在再検証（消えた ID による即死ガード、既存と同型）
-- [ ] **3-4**: delete の codex 経路（`codex delete <id>`、timeout 10s、失敗時は一覧維持 + ログ）
-- [ ] **3-5**: rename が codex セッションでも効くこと（`SessionNames` 共用）＋ live codex タブへの `onTabLabel` 反映
-- [ ] **3-6**: UI — `sessions-drawer.ts` に CLI バッジ列を追加
-- [ ] **3-7**: ビルド + tsc + 実機スモーク（codex セッションの一覧表示・resume でレイヤ復元・rename・delete・実行中グレーアウト）
+- [x] **3-1**: `src/Panel/CodexSessionsCatalog.cs` — `Scan()`
+  - rollout 全走査 + 1 行目 `session_meta.cwd` フィルタ。head facts は path キー + mtime でキャッシュ
+    （session_meta は不変、HasContent/FirstPrompt のみ mtime 変化で再読）
+  - 表示名: 手動名（SessionNames、Panel 側）> `thread_name`（session_index.jsonl、遅延あり=ベストエフォート）
+    > 先頭 `user_message` > id 短縮。空セッション除外（`user_message` 無し。chunk 超えファイルは内容ありとみなす）
+  - allowlist（`TryGetKnown` / `TryGetKnownTitle`、claude 側と同型）
+- [x] **3-2**: `RequestSessionsScan` で両カタログをマージ（`cli` フィールド付与、updated 降順の一体ソート）
+- [x] **3-3**: resume の CLI 振り分け（カタログ横断で Kind 特定 → 該当アダプタで spawn。ID は UUID なので衝突しない）
+  - transcript 存在再検証 + `IsSessionBlocked` ガード（下記）
+- [x] **3-4**: delete の codex 経路（`CodexSessionsCatalog.Delete` = `codex delete <id>`、10s bound、
+  失敗時は一覧維持 + ログ。索引・アーカイブの整合を CLI に任せるためファイル直接削除はしない）
+- [x] **3-5**: rename は `SessionNames` 共用で codex にも効く。`ComputeLabel` を CLI 別カタログ振り分けに変更
+  （live codex タブの自動タイトルも反映）
+- [x] **3-6**: UI — `sessions-drawer.ts` の行頭に CLI バッジ（● / ◆、タブと同一スタイル）
+- [ ] **3-7**: ビルド ✅（0 警告 0 エラー）/ **実機スモーク未**（codex セッションの一覧表示・resume でレイヤ復元・
+  rename・delete・実行中/pending グレーアウト）
 
 ### 📋 Codex レビュー
-- [ ] **3-8**: 対象: `CodexSessionsCatalog.cs`, `CoRhinoPanel.cs`, `sessions-drawer.ts`
-  - 観点: BG スレッド規律、allowlist の抜け（任意 ID resume/delete 防止）、`codex delete` の失敗処理
+- [x] **3-8**: 実施済み（2 ラウンド）
+  - R1 High: ID 未発見（または発見タイムアウト）の実行中 codex セッションが非 live 扱いになり
+    二重 resume / live delete が可能 → **PendingCodexTabs** 集合 + 単一判定関数 `IsSessionBlocked`
+    （LiveSessionIds ∪ DeletingSessionIds ∪ codex-pending-cutoff）を drawer 装飾と resume/delete ガードで共用
+  - R1 Medium: `codex delete` 実行中（〜10s）の行が resume 可能 → **DeletingSessionIds 予約**（UI スレッド、
+    完了時に解除 + 再スキャン。予約直後にも再スキャンして行を即ブロック表示）
+  - R2: 両修正の解消を確認、LGTM
 
 ---
 
