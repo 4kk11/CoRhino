@@ -254,7 +254,7 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
   全走査し、**1 行目 `session_meta.cwd` == 共有 workspace** のものだけに絞る（head facts は path キーで
   キャッシュ、mtime が動いたら再読）。タイトルは `session_index.jsonl` の `thread_name`（遅延・欠落あり →
   ベストエフォート）> 先頭ユーザープロンプト > id 短縮。空セッション（`user_message` 行なし）は除外。
-  allowlist（`TryGetKnown`）・BG スレッド規律は claude 側と同型。削除は `codex delete <id>`（`Delete()`、
+  allowlist（`TryGetKnown`）・BG スレッド規律は claude 側と同型。削除は `codex delete --force <id>`（`Delete()`、非対話のため `--force` 必須、
   bounded 10s）。`SendSessionsList` が両カタログのマージ + `cli` バッジ付与を行う。
 - `SessionsCatalog.Scan()` … 共有ワークスペースの cwd→slug 変換（`ProjectSlug`、ASCII 英数字以外→`-`。
   Windows は未検証）で得た**単一の** `~/.claude/projects/<slug>/` の**トップレベル** `*.jsonl` だけを列挙
@@ -508,7 +508,7 @@ CoRhino は内部に4つの通信境界を持つ。バグはたいていこの�
 | `listSessions` | — | `RequestSessionsScan()`（BG スキャン → `onSessionsList`） |
 | `resumeSession` | `sessionId` | 両カタログ横断の allowlist ＋ transcript 存在 ＋ 非実行中を検証 → 該当 CLI の新規タブとして resume spawn |
 | `renameSession` | `sessionId, name` | `SessionNames.Set`（空で削除）→ live タブへ `onTabLabel` → 一覧再送 |
-| `deleteSession` | `sessionId` | allowlist＋非実行中を検証 → claude: jsonl + subagents dir を直接削除 / codex: BG で `codex delete <id>`（索引整合のため）→ 名前削除 → 一覧再送 |
+| `deleteSession` | `sessionId` | allowlist＋非実行中を検証 → claude: jsonl + subagents dir を直接削除 / codex: BG で `codex delete --force <id>`（索引整合のため）→ 名前削除 → 一覧再送 |
 | `debug` | `message` | `Log.Write("[Claude/UI] …")` |
 
 **C# → UI（`ExecuteScriptAsync` で `window.CoRhinoPanel` を呼ぶ）**
