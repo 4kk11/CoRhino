@@ -603,3 +603,18 @@ Windows 実機（ConPTY での同挙動）も未確認・要実施。
 
 **検証**: `dotnet build` 0 警告 0 エラー。実機確認（タブ追加直後に罫線・入力ボックスが崩れないこと、
 日本語出力の化けが出ないこと）は次回 Rhino 起動時に B9 と合わせて実施。
+
+### 追加: Rhino 言語設定への追従（同日）
+
+パネル UI・ダイアログ・claude への注入文を Rhino の言語設定に追従させた（ja/en の2択、
+`AppearanceSettings.LanguageIdentifier == 1041` で判定）。判断:
+
+- **OS ロケールではなく Rhino の言語**を見る（パネルはドック先のアプリと同じ言語で読めるべき）。
+  Rhino の言語変更は再起動必須なので、判定はプロセス起動時に1回（`L10n` static readonly）。
+- **UI への伝達は HTML 注入**（`LoadWebView` で `<head>` に `window.CORHINO_LANG`）: シェルは boot で
+  同期的に DOM を組むため、`ready` 応答で言語を返すのでは間に合わない（一瞬別言語が見える or 再描画が要る）。
+  単一 HTML を `LoadHtml` する構成だからこそ取れる最短経路。dev サーバ経路は注入不可 → ブラウザロケールに
+  フォールバック（開発時のみ）。
+- **seed されるテンプレ（CLAUDE.md・skills README/manifest）は seed 時の言語で固定**: 初回 seed 後は
+  ユーザー所有で上書きしない既存方針に従う。言語を変えたければ削除して再 seed。
+  spawn 毎に注入するレイヤ指示とダイアログは常に現在の言語。

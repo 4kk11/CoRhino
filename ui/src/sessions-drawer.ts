@@ -4,6 +4,8 @@
 // terminal refitting. All titles/names land via textContent (they are
 // model/user-authored — never innerHTML).
 
+import { L, relTime } from './i18n'
+
 export type SessionInfo = {
   sessionId: string
   title: string
@@ -54,7 +56,7 @@ export function createSessionsDrawer(opts: {
   const button = document.createElement('div')
   button.id = 'sessionsbtn'
   button.textContent = '🕘'
-  button.title = '過去のセッション'
+  button.title = L.sessionsBtn
   button.addEventListener('click', () => toggle())
 
   let open = false
@@ -86,7 +88,7 @@ export function createSessionsDrawer(opts: {
     if (sessions.length === 0) {
       const empty = document.createElement('div')
       empty.className = 'ss-empty'
-      empty.textContent = 'まだセッションがありません。タブで会話するとここに履歴が残ります。'
+      empty.textContent = L.sessionsEmpty
       list.appendChild(empty)
       return
     }
@@ -110,7 +112,7 @@ export function createSessionsDrawer(opts: {
     const rename = document.createElement('span')
     rename.className = 'ss-rename'
     rename.textContent = '✎'
-    rename.title = '名前を変更（空にすると自動タイトルに戻る）'
+    rename.title = L.renameSession
     rename.addEventListener('click', (e) => {
       e.stopPropagation()
       startRename(session, name)
@@ -127,7 +129,7 @@ export function createSessionsDrawer(opts: {
       if (session.isLive) {
         const state = document.createElement('span')
         state.className = 'ss-state live'
-        state.textContent = '実行中'
+        state.textContent = L.running
         sub.appendChild(state)
       }
       if (session.customName) {
@@ -141,10 +143,10 @@ export function createSessionsDrawer(opts: {
     }
 
     if (!blocked) {
-      row.title = 'クリックで再開'
+      row.title = L.clickToResume
       row.addEventListener('click', () => opts.resumeSession(session.sessionId))
     } else {
-      row.title = 'このセッションはタブで実行中です'
+      row.title = L.liveRowHint
     }
     return row
   }
@@ -181,16 +183,6 @@ export function createSessionsDrawer(opts: {
   }
 
   return { root, button, handleSessionsList, close }
-}
-
-function relTime(iso: string): string {
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return ''
-  const s = Math.max(0, (Date.now() - t) / 1000)
-  if (s < 60) return 'たった今'
-  if (s < 3600) return `${Math.floor(s / 60)}分前`
-  if (s < 86400) return `${Math.floor(s / 3600)}時間前`
-  return `${Math.floor(s / 86400)}日前`
 }
 
 function injectStyles() {

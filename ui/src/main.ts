@@ -3,6 +3,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { createSkillsDrawer, type SkillsListPayload } from './skills-drawer'
 import { createSessionsDrawer, type SessionsListPayload } from './sessions-drawer'
+import { L } from './i18n'
 
 // The host created an agent (tab). sessionId is the claude session it runs;
 // label is the initial tab text (custom name > auto title > agentId) —
@@ -175,7 +176,7 @@ ${isWindowsWebView2 ? `
   const addBtn = document.createElement('div')
   addBtn.id = 'addtab'
   addBtn.textContent = '+'
-  addBtn.title = '新しいエージェント'
+  addBtn.title = L.newAgent
   addBtn.addEventListener('click', () => post({ type: 'createTab' }))
   tabscroll.appendChild(addBtn)
   const termsEl = document.createElement('div')
@@ -327,7 +328,7 @@ ${isWindowsWebView2 ? `
     const label = document.createElement('span')
     label.className = 'tablabel'
     label.textContent = initialLabel
-    label.title = 'ダブルクリックで名前を変更'
+    label.title = L.renameTabHint
     label.addEventListener('dblclick', (e) => {
       e.stopPropagation()
       const tab = tabs.get(agentId)
@@ -338,7 +339,7 @@ ${isWindowsWebView2 ? `
     const close = document.createElement('span')
     close.className = 'close'
     close.textContent = '×'
-    close.title = 'このエージェントを終了'
+    close.title = L.closeAgent
     close.addEventListener('click', (e) => {
       e.stopPropagation()
       post({ type: 'closeTab', agentId })

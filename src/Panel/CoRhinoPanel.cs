@@ -380,8 +380,13 @@ namespace CoRhino.Panel
                 return;
             }
             var html = File.ReadAllText(indexPath);
+            // Language handshake: the shell builds its DOM synchronously at boot,
+            // before it could ask the host — so the language must already be in
+            // the page when the first script runs. (The dev-server path above has
+            // no injection point; the UI falls back to the browser locale there.)
+            html = html.Replace("<head>", $"<head><script>window.CORHINO_LANG='{L10n.Tag}'</script>");
             _webView.LoadHtml(html);
-            Log.Write($"[CoRhino] LoadHtml invoked, html length={html.Length}");
+            Log.Write($"[CoRhino] LoadHtml invoked, html length={html.Length}, lang={L10n.Tag}");
         }
 
         async System.Threading.Tasks.Task StartSession(AgentTab tab)
@@ -421,10 +426,13 @@ namespace CoRhino.Panel
                     // shared workspace CLAUDE.md holds the rules; this carries the
                     // one per-session value it can't.
                     claudeArgs.Add("--append-system-prompt");
-                    claudeArgs.Add(
+                    claudeArgs.Add(L10n.T(
                         $"このセッションの担当 Rhino レイヤは `{LayerFor(tab.SessionId)}` です。" +
                         "オブジェクトの作成・変更・削除はこのレイヤ配下のみで行ってください" +
-                        "（詳細は CLAUDE.md の「並列エージェントのルール」）。");
+                        "（詳細は CLAUDE.md の「並列エージェントのルール」）。",
+                        $"This session's assigned Rhino layer is `{LayerFor(tab.SessionId)}`. " +
+                        "Create, modify, and delete objects only under this layer " +
+                        "(see the parallel-agent rules in CLAUDE.md)."));
                 }
 
                 // CoRhino's bundled cc-plugin (onboarding skills like save-rhino-skill)

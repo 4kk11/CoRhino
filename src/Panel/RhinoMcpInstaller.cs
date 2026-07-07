@@ -57,15 +57,20 @@ namespace CoRhino.Panel
             if (yak == null)
             {
                 Log.Write("[CoRhino] yak CLI not found; cannot auto-install Rhino-MCP-Platform.");
-                ShowError(
+                ShowError(L10n.T(
                     "Rhino 操作に必要な Rhino-MCP-Platform が未導入ですが、yak CLI が見つからず自動インストールできませんでした。\n\n" +
-                    "Rhino の PackageManager から \"Rhino-MCP-Platform\" を手動でインストールし、Rhino を再起動してください。");
+                    "Rhino の PackageManager から \"Rhino-MCP-Platform\" を手動でインストールし、Rhino を再起動してください。",
+                    "Rhino-MCP-Platform (required for operating Rhino) is not installed, and the yak CLI could not be found for automatic installation.\n\n" +
+                    "Please install \"Rhino-MCP-Platform\" manually from Rhino's PackageManager and restart Rhino."));
                 return;
             }
 
             var consent = MessageBox.Show(
-                "Rhino を Claude で操作するには Rhino-MCP-Platform が必要です。\n\n" +
-                "今すぐインストールしますか？（完了後に Rhino の再起動が必要です）",
+                L10n.T(
+                    "Rhino を Claude で操作するには Rhino-MCP-Platform が必要です。\n\n" +
+                    "今すぐインストールしますか？（完了後に Rhino の再起動が必要です）",
+                    "Operating Rhino with Claude requires Rhino-MCP-Platform.\n\n" +
+                    "Install it now? (Rhino must be restarted afterwards)"),
                 DialogCaption,
                 MessageBoxButtons.YesNo,
                 MessageBoxType.Question);
@@ -79,7 +84,7 @@ namespace CoRhino.Panel
             // Lightweight progress on the command line; the heavy states (done→restart,
             // error) are native dialogs per the chosen status mechanism.
             Log.Write($"[CoRhino] Installing {PackageName} via {yak} ...");
-            RhinoApp.WriteLine($"{PackageName} をインストールしています...");
+            RhinoApp.WriteLine(L10n.T($"{PackageName} をインストールしています...", $"Installing {PackageName}..."));
 
             Task.Run(() =>
             {
@@ -88,15 +93,18 @@ namespace CoRhino.Panel
                 {
                     if (ok)
                     {
-                        ShowInfo(
+                        ShowInfo(L10n.T(
                             $"{PackageName} のインストールが完了しました。\n\n" +
-                            "Rhino を再起動すると、このパネルから Rhino を操作できるようになります。");
+                            "Rhino を再起動すると、このパネルから Rhino を操作できるようになります。",
+                            $"{PackageName} was installed successfully.\n\n" +
+                            "Restart Rhino to start operating it from this panel."));
                     }
                     else
                     {
-                        ShowError(
-                            $"{PackageName} のインストールに失敗しました。\n\n" +
-                            (string.IsNullOrEmpty(output) ? "詳細はログを確認してください。" : output));
+                        ShowError(L10n.T(
+                            $"{PackageName} のインストールに失敗しました。\n\n",
+                            $"Failed to install {PackageName}.\n\n") +
+                            (string.IsNullOrEmpty(output) ? L10n.T("詳細はログを確認してください。", "See the log for details.") : output));
                     }
                 });
             });
@@ -118,14 +126,14 @@ namespace CoRhino.Panel
                 psi.ArgumentList.Add(PackageName);
 
                 using var proc = Process.Start(psi);
-                if (proc == null) return (false, "yak プロセスを起動できませんでした。");
+                if (proc == null) return (false, L10n.T("yak プロセスを起動できませんでした。", "Could not start the yak process."));
 
                 var stdout = proc.StandardOutput.ReadToEnd();
                 var stderr = proc.StandardError.ReadToEnd();
                 if (!proc.WaitForExit(120000))
                 {
                     try { proc.Kill(true); } catch { }
-                    return (false, "yak install がタイムアウトしました（120s）。");
+                    return (false, L10n.T("yak install がタイムアウトしました（120s）。", "yak install timed out (120s)."));
                 }
 
                 var combined = ($"{stdout}\n{stderr}").Trim();

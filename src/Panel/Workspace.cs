@@ -166,7 +166,12 @@ namespace CoRhino.Panel
             """;
         }
 
-        const string ClaudeMdTemplate = """
+        // Seed-time language (L10n follows Rhino's UI language): the file is
+        // user-owned after the first seed, so it keeps the language it was born
+        // with even if Rhino's language later changes — delete it to re-seed.
+        static string ClaudeMdTemplate => L10n.Japanese ? ClaudeMdTemplateJa : ClaudeMdTemplateEn;
+
+        const string ClaudeMdTemplateJa = """
         # CoRhino Workspace
 
         この CLAUDE.md は CoRhino が起動するすべての Claude セッションが共有する作業ディレクトリです。
@@ -209,7 +214,54 @@ namespace CoRhino.Panel
           サブディレクトリを切ると衝突しない）
         """;
 
-        const string UserSkillsManifestTemplate = """
+        const string ClaudeMdTemplateEn = """
+        # CoRhino Workspace
+
+        This CLAUDE.md belongs to the working directory shared by every Claude
+        session CoRhino starts. Sessions always launch here, not next to the
+        active .3dm. Operate Rhino through the tools of the `rhino` MCP server
+        (RhinoMCP); it points at the panel's Rhino instance on its dedicated
+        port, so every tool call lands in that panel's Rhino.
+
+        ## Parallel-agent rules (important)
+
+        Multiple Claude sessions may be connected to the SAME Rhino document at
+        once. To keep from clobbering each other:
+
+        - Your assigned layer is given in the system prompt in the form
+          `s-XXXXXXXX`. Create, move, modify, and delete ONLY objects under
+          your assigned layer.
+        - Before creating objects, set the current layer to your assigned layer
+          (or `assigned-layer/<purpose>`).
+        - Other layers are free to READ, but never write to or delete from them.
+        - Other agents' changes are not pushed to you. When you need fresh
+          state, query it (e.g. `list_objects`).
+
+        ## Key tools (RhinoMCP)
+
+        - `run_command` — run a Rhino command (the command-line entry point)
+        - `run_python` — run RhinoCommon via Python; the general escape hatch
+        - `run_csharp` — run RhinoCommon via C#
+        - `list_objects` — enumerate objects in the document
+        - `get_viewport_image` — capture the viewport to verify results
+        - `open_doc` / `save_doc` — open / save models
+        - `spawn_slot` / `list_slots` / `close_slot` — batch work in headless slots that don't touch the main UI
+
+        ## How to work
+
+        - Prefer `run_python` for creating/editing/querying geometry; use the dedicated wrappers only where they exist
+        - For bulk file processing, spawn a slot and open/run/save/close inside it
+        - After changes, always verify with `get_viewport_image` or `list_objects`
+
+        ## Notes
+
+        - Put generated files and scratch under this directory (it is shared by
+          all sessions — use a subdirectory for larger jobs to avoid collisions)
+        """;
+
+        static string UserSkillsManifestTemplate => L10n.Japanese ? UserSkillsManifestTemplateJa : UserSkillsManifestTemplateEn;
+
+        const string UserSkillsManifestTemplateJa = """
         {
           "name": "my-rhino-skills",
           "description": "CoRhino の全セッションに読み込まれる自作スキル集",
@@ -218,7 +270,18 @@ namespace CoRhino.Panel
 
         """;
 
-        const string UserSkillsReadmeTemplate = """
+        const string UserSkillsManifestTemplateEn = """
+        {
+          "name": "my-rhino-skills",
+          "description": "Personal skills loaded into every CoRhino session",
+          "version": "0.1.0"
+        }
+
+        """;
+
+        static string UserSkillsReadmeTemplate => L10n.Japanese ? UserSkillsReadmeTemplateJa : UserSkillsReadmeTemplateEn;
+
+        const string UserSkillsReadmeTemplateJa = """
         # My Rhino Skills
 
         CoRhino が起動するすべての Claude セッション（全パネル・全タブ）に読み込まれる、
@@ -247,6 +310,38 @@ namespace CoRhino.Panel
 
         - 新しいタブ / セッションには自動で載る。
         - 実行中のセッションには `/plugin reload-plugins` で反映する。
+        """;
+
+        const string UserSkillsReadmeTemplateEn = """
+        # My Rhino Skills
+
+        Your personal skill collection, loaded into every Claude session CoRhino
+        starts (all panels, all tabs). Skills placed here reach CoRhino sessions
+        only — nothing under `~/.claude` is touched.
+
+        ## Adding a skill
+
+        Create `skills/<skill-name>/SKILL.md`:
+
+        ```markdown
+        ---
+        name: facade-louver
+        description: When generating facade louvers. Confirm pitch, angle, and the base surface, then generate with run_python
+        ---
+
+        Write the steps, know-how, and code snippets here.
+        ```
+
+        - `description` is the trigger. Claude reads it to decide whether to use
+          the skill, so state concretely WHEN it applies.
+        - You don't have to write these by hand: ask the Claude in the panel to
+          "turn this workflow into a skill" and the bundled `save-rhino-skill`
+          meta-skill writes it out in this format.
+
+        ## When skills take effect
+
+        - New tabs / sessions pick them up automatically.
+        - Running sessions need `/plugin reload-plugins`.
         """;
     }
 }

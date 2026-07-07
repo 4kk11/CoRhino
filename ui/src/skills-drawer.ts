@@ -4,6 +4,8 @@
 // message bridge, and terminal refitting. All skill text lands via textContent
 // (names/descriptions are user-authored — never innerHTML).
 
+import { L } from './i18n'
+
 export type SkillInfo = {
   name: string
   description: string
@@ -48,7 +50,7 @@ export function createSkillsDrawer(opts: {
   const reloadBtn = document.createElement('span')
   reloadBtn.className = 'sd-reload'
   reloadBtn.textContent = '⟳'
-  reloadBtn.title = 'アクティブなセッションにスキルを再読み込み (/plugin reload-plugins)'
+  reloadBtn.title = L.skillsReload
   reloadBtn.addEventListener('click', () => {
     const id = opts.getActiveAgentId()
     if (id) opts.reloadSkills(id)
@@ -65,7 +67,7 @@ export function createSkillsDrawer(opts: {
   const button = document.createElement('div')
   button.id = 'skillsbtn'
   button.textContent = '⚡'
-  button.title = 'スキル一覧'
+  button.title = L.skillsBtn
   button.addEventListener('click', () => toggle())
 
   let open = false
@@ -103,8 +105,7 @@ export function createSkillsDrawer(opts: {
     if (skills.length === 0) {
       const empty = document.createElement('div')
       empty.className = 'sd-empty'
-      empty.textContent =
-        'まだスキルがありません。claude に「今の手順をスキルにして」と頼むと保存されます。'
+      empty.textContent = L.skillsEmpty
       list.appendChild(empty)
       return
     }
@@ -125,7 +126,7 @@ export function createSkillsDrawer(opts: {
     name.textContent = skill.name
     const badge = document.createElement('span')
     badge.className = 'sd-badge'
-    badge.textContent = skill.source === 'user' ? '自作' : '同梱'
+    badge.textContent = skill.source === 'user' ? L.badgeUser : L.badgeBundled
     head.appendChild(dot)
     head.appendChild(name)
     head.appendChild(badge)
@@ -134,7 +135,7 @@ export function createSkillsDrawer(opts: {
     if (skill.needsReload) {
       const hint = document.createElement('div')
       hint.className = 'sd-stalehint'
-      hint.textContent = '要 reload（⟳ で反映）'
+      hint.textContent = L.needsReload
       row.appendChild(hint)
     }
 
@@ -142,10 +143,10 @@ export function createSkillsDrawer(opts: {
     detail.className = 'sd-detail'
     const desc = document.createElement('div')
     desc.className = 'sd-desc'
-    desc.textContent = skill.description || '(説明なし)'
+    desc.textContent = skill.description || L.noDescription
     const openLink = document.createElement('div')
     openLink.className = 'sd-open'
-    openLink.textContent = '↗ エディタで開く'
+    openLink.textContent = L.openInEditor
     openLink.addEventListener('click', (e) => {
       e.stopPropagation()
       opts.openSkill(skill.path)
