@@ -29,6 +29,12 @@ namespace CoRhino.Cli
         public AgentCliKind Kind => AgentCliKind.Codex;
         public string DisplayName => "Codex";
         public string BinaryName => "codex";
+        // OpenAI's official standalone installer (first-listed in the codex
+        // README, ahead of brew/npm). Lands in ~/.local/bin.
+        public string NativeInstallCommand =>
+            System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)
+                ? "irm https://chatgpt.com/codex/install.ps1 | iex"
+                : "curl -fsSL https://chatgpt.com/codex/install.sh | sh";
         // Skills reach codex through the workspace symlinks (see
         // Workspace.EnsureCodexSkillsLinks): user store on .agents/skills,
         // bundled cc-plugin on .codex/skills — the same files claude loads via

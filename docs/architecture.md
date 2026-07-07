@@ -194,7 +194,7 @@ Rhino がドキュメントごとに `new CoRhinoPanel(uint documentSerialNumber
 #### claude の起動引数（`ClaudeCli.BuildArgs` → `StartSession` が PTY spawn）
 
 引数の組み立ては CLI アダプタ（`src/Cli/ClaudeCli.cs` → 2.7b）の仕事。`StartSession` は CLI 非依存の
-PTY 配線（解決→SpawnContext→BuildArgs→spawn→フォールバック）だけを持つ。
+PTY 配線（解決→SpawnContext→BuildArgs→spawn、未解決時はセットアップビュー）だけを持つ。
 
 ```
 claude --strict-mcp-config --mcp-config <~/.corhino/runtime/mcp-<port>-<agentId>.json>
@@ -219,7 +219,13 @@ claude --strict-mcp-config --mcp-config <~/.corhino/runtime/mcp-<port>-<agentId>
   resume でも同じレイヤが復元される。
 - cwd は `Workspace.EnsureWorkspace()` が返す**全セッション共有**の `~/.corhino/workspace/`。
   **アクティブ `.3dm` には追従しない**（D5）。ポートにもタブにも依存しない（D11）。
-- claude が PATH に無ければ `bash -l`（Unix）/ `cmd.exe`（Windows）へフォールバック。
+- CLI が解決できなければ **PTY を起動せず、タブ内の CLI セットアップビュー**を出す（`onCliSetup` → D19）。
+  公式ネイティブインストーラのワンライナー（`IAgentCli.NativeInstallCommand`）を表示・コピー・その場で
+  実行（そのタブの PTY に出力が流れる）でき、成功すれば同じタブで CLI が起動する。シェルは
+  「かわりにシェルを開く」の明示操作のみ（旧サイレントフォールバックは廃止）。
+- `CliResolver` はログインシェル解決に失敗すると `~/.local/bin/<bin>` を直接チェックする
+  （ネイティブインストーラの配置先。PATH 追記先が `.zprofile` 等で `bash -lc` から見えないため）。
+  この経路で解決した場合は spawn 環境の `PATH` に該当ディレクトリを前置する。
 - Windows で `claudePath` が `.exe` でない（`.cmd`/`.bat` 等）場合は `cmd.exe /c <path> <args>` で起動。
 
 #### 出力バッファリング
@@ -393,7 +399,7 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
 - `Log.Write` — 診断トレース。`%TMPDIR%/CoRhino.log` にロック付きで追記するだけで、コマンドラインには出さない。
   デバッグはこのファイルを `tail` するのが基本
 - `Log.User` — ユーザー向け。`RhinoApp.WriteLine` でコマンドラインに出し、ファイルにも追記する。
-  ダイアログもパネル UI も持たないユーザー影響のある失敗（claude CLI 不在フォールバック、PTY 起動失敗、
+  ダイアログもパネル UI も持たないユーザー影響のある失敗（CLI 不在＝セットアップビュー表示、PTY 起動失敗、
   MCPSpawn 失敗、`web/index.html` 欠落）とインストール進捗のみに限定する
 
 ### 2.9 UI 層 — `ui/`（xterm.js）
@@ -423,13 +429,15 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
 - **送信メッセージ（Outbound）**: `ready` / `createTab{cli?}` / `closeTab{agentId}` / `stdin{agentId,data}` /
   `resize{agentId,cols,rows}` / `listSkills{agentId}` / `openSkill{path}` / `reloadSkills{agentId}` /
   `listSessions` / `resumeSession{sessionId}` / `renameSession{sessionId,name}` /
-  `deleteSession{sessionId}` / `debug`。
+  `deleteSession{sessionId}` / `installCli{agentId}` / `recheckCli{agentId}` /
+  `openShellInTab{agentId}` / `debug`。
 - **受信窓口** `window.CoRhinoPanel`: C# 側が `ExecuteScriptAsync` で呼ぶ。
   - `onTabCreated({agentId, sessionId, label, customName, cli})` → タブ＋xterm を生成しアクティブ化（cli バッジ付き）
   - `onTabSession({agentId, sessionId})` → codex タブの ID 確定を反映
   - `onCliAvailability({claude, codex})` → ＋メニューの項目状態を更新
   - `onPtyData(agentId, text)` → 該当タブの `term.write(text)`
-  - `onSessionRestart(agentId)` → 該当タブの `term.reset()`
+  - `onSessionRestart(agentId)` → セットアップビュー消灯 → `term.reset()` → resize 再送（ホストの PTY は作り直しで 80x24 に戻るため）
+  - `onCliSetup({agentId, phase, cli, command})` → CLI セットアップビュー: `missing`=中央オーバーレイ（インストーラ表示＋実行/再チェック/シェル） / `installing`=消灯（インストーラ出力が xterm に流れる） / `failed`=下端バナー（出力を隠さない）
   - `onTabClosed(agentId)` → そのタブを除去
   - `onTabsReset()` → 全タブ除去（reopen 再 spawn 前）
   - `onSkillsList(payload)` → スキルドロワーへ（閉時・非アクティブタブの payload は無視）
@@ -504,7 +512,7 @@ CoRhino は内部に4つの通信境界を持つ。バグはたいていこの�
 
 | `type` | ペイロード | C# の処理 |
 |---|---|---|
-| `ready` | — | `_webReady=true` → 各タブを `onTabCreated` で announce → `FlushPending` → `PushCliAvailability`（BG プローブ → `onCliAvailability`） |
+| `ready` | — | `_webReady=true` → 各タブを `onTabCreated` で announce → `FlushPending` → セットアップ中タブは `onCliSetup` を再送 → `PushCliAvailability`（BG プローブ → `onCliAvailability`） |
 | `createTab` | `cli?`（"claude"/"codex"、省略時 claude） | `SpawnTab(kind)`（次の agentId を採番し該当 CLI を起動） |
 | `closeTab` | `agentId` | `CloseTab(agentId)`（その PtySession を Dispose） |
 | `stdin` | `agentId, data` | UTF-8 で該当タブの `Session.Write()`（PTY へ） |
@@ -516,6 +524,9 @@ CoRhino は内部に4つの通信境界を持つ。バグはたいていこの�
 | `resumeSession` | `sessionId` | 両カタログ横断の allowlist ＋ transcript 存在 ＋ 非実行中を検証 → 該当 CLI の新規タブとして resume spawn |
 | `renameSession` | `sessionId, name` | `SessionNames.Set`（空で削除）→ live タブへ `onTabLabel` → 一覧再送 |
 | `deleteSession` | `sessionId` | allowlist＋非実行中を検証 → claude: jsonl + subagents dir を直接削除 / codex: BG で `codex delete --force <id>`（索引整合のため）→ 名前削除 → 一覧再送 |
+| `installCli` | `agentId` | セットアップ中タブのみ: `IAgentCli.NativeInstallCommand` をそのタブの PTY で実行（unix: `bash -lc` / win: `powershell -Command`）。exit で再プローブ → 成功なら同タブで CLI 起動、失敗なら `onCliSetup(failed)` |
+| `recheckCli` | `agentId` | セットアップ中タブのみ: BG 再プローブ → 成功なら同タブで CLI 起動＋`PushCliAvailability` 再送、失敗なら `onCliSetup(failed)` |
+| `openShellInTab` | `agentId` | セットアップ中タブのみ: ログインシェル（`bash -l` / `cmd.exe`）を明示起動（旧サイレントフォールバックの移設） |
 | `debug` | `message` | `Log.Write("[Claude/UI] …")` |
 
 **C# → UI（`ExecuteScriptAsync` で `window.CoRhinoPanel` を呼ぶ）**
@@ -526,7 +537,8 @@ CoRhino は内部に4つの通信境界を持つ。バグはたいていこの�
 | `onTabSession({agentId, sessionId})` | codex タブの ID が発見された（rename が可能になる） |
 | `onCliAvailability({claude, codex})` | ＋メニューの CLI 項目の有効/グレーアウト |
 | `onPtyData(agentId, text)` | 該当タブの `term.write(text)` |
-| `onSessionRestart(agentId)` | 該当タブの `term.reset()`（再起動時に画面クリア） |
+| `onSessionRestart(agentId)` | セットアップビュー消灯 → `term.reset()` → resize 再送（同タブでの CLI/シェル再起動時。ホストの PTY は作り直し） |
+| `onCliSetup({agentId, phase, cli, command})` | CLI セットアップビュー。`missing`=中央オーバーレイ / `installing`=消灯＋resize 再送 / `failed`=下端バナー。command は公式ネイティブインストーラの表示・コピー用文字列（実行もこの文字列そのもの） |
 | `onTabClosed(agentId)` | そのタブを除去 |
 | `onTabsReset()` | 全タブ除去（reopen 再 spawn 前） |
 | `onSkillsList(payload)` | `{agentId, skills[]}`。ドロワーが開いていて payload がアクティブタブのものなら描画（それ以外は無視）。listSkills/reloadSkills への応答のほか、watcher 検知時に**全タブ分** push される |
@@ -723,7 +735,8 @@ RhinoMCP ホストは**ドキュメント単位**。`EndOpenDocument` / `NewDocu
 | WebView ブリッジ | `window.eto.postMessage`（WKWebView） | `window.chrome.webview.postMessage`（WebView2） |
 | claude 解決 | `bash -lc "command -v claude"` | `where.exe claude`（`.exe` 優先、`.cmd` は実体 `.exe` に解決） |
 | claude 起動 | 直接 spawn | `.exe` は直接、それ以外は `cmd.exe /c` 経由 |
-| フォールバック | `bash -l` | `cmd.exe` |
+| CLI 未解決時のシェル（明示操作） | `bash -l` | `cmd.exe` |
+| インストーラ実行 | `bash -lc "<installer>"` | `powershell -ExecutionPolicy Bypass -Command "<installer>"` |
 | ネイティブ dylib | `lipo` で arm64+x64 ユニバーサル化 | win-x64 native をコピー |
 | yak の場所 | `<Rhino.app>/Contents/Resources/bin/yak` | Rhino System dir の `yak.exe` |
 | 改行 | PTY が `\n`→`\r\n` 変換 | ConPTY は変換しない → xterm `convertEol` で吸収 |
@@ -732,7 +745,7 @@ RhinoMCP ホストは**ドキュメント単位**。`EndOpenDocument` / `NewDocu
 
 ---
 
-## 7. 確定した設計判断（D1–D18）とトレース
+## 7. 確定した設計判断（D1–D19）とトレース
 
 各判断が**どのコードに現れるか**まで対応づける（判断の詳細な理由・経緯は [`design-history.md`](design-history.md)）。
 
@@ -756,6 +769,7 @@ RhinoMCP ホストは**ドキュメント単位**。`EndOpenDocument` / `NewDocu
 | **D16** | codex のレイヤは C# 採番トークン + `session-layers.json` 永続マッピング | spawn 時に ID が無いので決定的導出（D11 方式）が使えない。resume で同一レイヤを復元するには永続化が必要 | `SessionLayers.cs` / `CodexCli.LayerTokenFor` |
 | **D17** | `AGENTS.md` を `CLAUDE.md` と同一テンプレから seed | 並列エージェントルールは CLI 非依存。codex は AGENTS.md を読む | `Workspace.EnsureWorkspace` / `WorkspaceGuideTemplate` |
 | **D18** | codex のスキルは workspace symlink mount（`.agents/skills`=ユーザー、`.codex/skills`=同梱）。ドロワーはリンク健全性を検証して列挙 | codex に `--plugin-dir` 相当なし。プロジェクトスキル発見規約（両ルート・symlink 可）を実測確認。claude と同一のスキル実体を共有 | `Workspace.EnsureCodexSkillsLinks`/`Codex*SkillsLinkActive` / `IAgentCli.LoadsSkillsViaWorkspaceMount` |
+| **D19** | CLI 未解決タブはサイレントシェルフォールバックを廃止し、タブ内セットアップビュー（公式ネイティブインストーラの表示・実行・再チェック・明示シェル）に置換 | 黙って bash が開くのは故障にしか見えない。インストーラは PTY でそのまま可視化でき、`~/.local/bin` 直チェックで導入直後の再プローブも成立する | `PushCliSetup`/`BeginCliInstall`/`RecheckCli`/`OpenShellInTab`（CoRhinoPanel.cs）/ `IAgentCli.NativeInstallCommand` / `CliResolver.WellKnownBinary` |
 
 **MCP ホスト起動の落とし穴（バグ B3）**: `_-MCPStart <port>` は `GetInteger` で対話的にポートを取るため、
 runscript からポートを渡せず「不明なコマンド: <port>」が漏れてホストが上がらなかった。RhinoMCP 側はこの racy な

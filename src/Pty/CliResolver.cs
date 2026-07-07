@@ -28,7 +28,24 @@ namespace CoRhino.Pty
         {
             string? cliPath = RunLoginShell($"command -v {binaryName} || which {binaryName}");
             string? loginPath = RunLoginShell("echo -n \"$PATH\"");
+            // The official native installers (claude.ai/install.sh,
+            // chatgpt.com/codex/install.sh) drop the binary into ~/.local/bin but
+            // write their PATH line to the USER's shell profile — .zprofile/.zshrc
+            // on the default macOS zsh — which the bash -lc probe above never
+            // reads. Without this direct check a just-completed native install
+            // (the setup view's whole point) would still probe as missing.
+            cliPath ??= WellKnownBinary(binaryName);
             return (cliPath, loginPath);
+        }
+
+        // ~/.local/bin/<name> — where both CLIs' native installers put the binary.
+        static string? WellKnownBinary(string binaryName)
+        {
+            var candidate = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".local", "bin",
+                RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? binaryName + ".exe" : binaryName);
+            return File.Exists(candidate) ? candidate : null;
         }
 
         static (string?, string?) ResolveWindows(string binaryName)
@@ -77,6 +94,11 @@ namespace CoRhino.Pty
                 }
             }
             catch { }
+
+            // Same well-known-dir fallback as unix: the native installers use
+            // %USERPROFILE%\.local\bin on Windows, which a fresh install may not
+            // have on the process PATH yet.
+            cliPath ??= WellKnownBinary(binaryName);
 
             var loginPath = Environment.GetEnvironmentVariable("PATH");
             return (cliPath, loginPath);

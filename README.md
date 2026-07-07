@@ -76,9 +76,12 @@ Rhino プロセス
 
 - **Rhino 8**（macOS: Apple Silicon / Intel、Windows）
 - **[Claude Code](https://claude.com/claude-code) CLI** (`claude`) が PATH 上にあること
-  - 見つからない場合はパネルがログインシェル (`bash -l` / `cmd.exe`) にフォールバックする
+  - 見つからない場合はタブ内にセットアップビューが出る: 公式ネイティブインストーラ
+    （macOS/Linux: `curl -fsSL https://claude.ai/install.sh | bash`）をボタン一つで実行でき、
+    完了すると同じタブで CLI が起動する（手動導入後の「再チェック」、明示的な「シェルを開く」も可）
 - （任意）**[Codex CLI](https://developers.openai.com/codex/cli)** (`codex`) — あれば ＋メニューから
   codex タブを起動できる。無ければメニューでグレーアウトされるだけで claude 側に影響はない
+  （codex のセットアップビューは `curl -fsSL https://chatgpt.com/codex/install.sh | sh` を案内する）
 - **Rhino-MCP-Platform**（yak パッケージ）
   - 未導入ならパネルが検出し、同意ダイアログ → `yak install` → 再起動案内まで自動で行う
 

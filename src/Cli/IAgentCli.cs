@@ -46,6 +46,14 @@ namespace CoRhino.Cli
         string BinaryName { get; }
 
         /// <summary>
+        /// The CLI's official native-installer one-liner for the current platform.
+        /// The setup view shows it verbatim AND its install button runs exactly
+        /// this string (unix: bash -lc, windows: powershell -Command) — display
+        /// and execution must never diverge.
+        /// </summary>
+        string NativeInstallCommand { get; }
+
+        /// <summary>
         /// The tab's layer token for a given session identity. Claude derives it
         /// deterministically from the session id (null in → null out). Codex:
         /// null mints a FRESH token (the id doesn't exist yet at spawn; call

@@ -18,6 +18,12 @@ namespace CoRhino.Cli
         public AgentCliKind Kind => AgentCliKind.Claude;
         public string DisplayName => "Claude Code";
         public string BinaryName => "claude";
+        // The official native installer (first-choice in Anthropic's docs; the
+        // only channel with background auto-updates). Lands in ~/.local/bin.
+        public string NativeInstallCommand =>
+            System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)
+                ? "irm https://claude.ai/install.ps1 | iex"
+                : "curl -fsSL https://claude.ai/install.sh | bash";
         public bool SupportsSkillsDrawer => true;
         public bool SupportsSkillsReload => true;          // /plugin reload-plugins
         public bool LoadsSkillsViaWorkspaceMount => false; // --plugin-dir ×2 (user + cc-plugin)

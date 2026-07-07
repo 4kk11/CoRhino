@@ -33,7 +33,11 @@ namespace CoRhino.Panel
             // spawns. Anchors the pending-codex drawer guard: while this tab's
             // session id is undiscovered, codex rollouts at least this fresh
             // may be *its* live session and must not be resumable/deletable.
-            public readonly DateTime CreatedAtUtc = DateTime.UtcNow;
+            // Re-anchored by RelaunchCliInTab: a tab that sat in the CLI setup
+            // view for a while would otherwise block every codex session newer
+            // than its (stale) creation time once it finally launches.
+            // UI-thread-only (all writers and the cutoff reader).
+            public DateTime CreatedAtUtc = DateTime.UtcNow;
             // True from spawn until StartSession finishes wiring. Counts as "alive"
             // so EnsureSessionAlive doesn't respawn a tab whose PTY is still coming up
             // (IsRunning is false until SpawnAsync returns). Set on the background
@@ -77,6 +81,16 @@ namespace CoRhino.Panel
             // (see UnregisterTab), and the task's finally releases it via this
             // flag. UI thread writes, launch thread reads → volatile.
             public volatile bool ReleaseSessionOnLaunchExit;
+            // Non-null while the tab shows the CLI setup view instead of a live
+            // PTY ("missing" | "installing" | "failed" — the onCliSetup wire
+            // enum). Set when Resolve fails at spawn, cleared when a CLI (or an
+            // explicit shell) actually launches. Written on launch/UI threads,
+            // read by the ready handler → volatile.
+            public volatile string? CliSetupPhase;
+            // True while this tab's PTY runs the native INSTALLER rather than an
+            // agent CLI — its exit must re-probe and relaunch, not RemoveTab
+            // (see OnSessionExited).
+            public volatile bool InstallerActive;
         }
 
         readonly WebView _webView;
@@ -296,11 +310,21 @@ namespace CoRhino.Panel
 
         // A tab's claude exited (typically via /exit). Remove just that tab; the last
         // tab's exit closes the whole panel. Re-running the CoRhino command reopens it
-        // and respawns a fresh agent via EnsureSessionAlive.
+        // and respawns a fresh agent via EnsureSessionAlive. Exception: a native
+        // INSTALLER run finishing is not the tab dying — re-probe and relaunch.
         void OnSessionExited(AgentTab tab, int code)
         {
             Log.Write($"[CoRhino] Tab {tab.AgentId} PTY exited with code {code}.");
-            Application.Instance?.AsyncInvoke(() => RemoveTab(tab));
+            Application.Instance?.AsyncInvoke(() =>
+            {
+                if (tab.InstallerActive)
+                {
+                    tab.InstallerActive = false;
+                    HandleInstallerExit(tab, code);
+                    return;
+                }
+                RemoveTab(tab);
+            });
         }
 
         // The single teardown path for a tab, whatever triggered it (claude /exit,
@@ -364,6 +388,192 @@ namespace CoRhino.Panel
                     if (tab.ReleaseSessionOnLaunchExit && tab.SessionId != null)
                         Application.Instance?.AsyncInvoke(() => LiveSessionIds.Remove(tab.SessionId));
                 }
+            });
+        }
+
+        // ---- CLI setup view (missing-CLI onboarding) --------------------------
+        // See docs/plans/cli-onboarding-design.md. A tab whose CLI didn't resolve
+        // shows an HTML setup view instead of a silent shell; its install button
+        // streams the official native installer through the tab's own PTY, and a
+        // successful probe relaunches the CLI in place.
+
+        // Tell the UI this tab's setup state ("missing"/"installing"/"failed").
+        // Safe to call from any thread; no-op when the tab isn't in setup. The
+        // phase is (re)read INSIDE the invoke, after an identity check — a
+        // reopen-respawn can retire this tab and hand its agentId to a fresh
+        // one, and a stale queued push must not paint an overlay onto it.
+        void PushCliSetup(AgentTab tab)
+        {
+            Application.Instance?.AsyncInvoke(() =>
+            {
+                if (!_webReady) return;
+                if (!_tabs.TryGetValue(tab.AgentId, out var current) || !ReferenceEquals(current, tab)) return;
+                var phase = tab.CliSetupPhase;
+                if (phase == null) return;
+                var encoded = JsonSerializer.Serialize(new
+                {
+                    agentId = tab.AgentId,
+                    phase,
+                    cli = CliId(tab),
+                    command = tab.Cli.NativeInstallCommand,
+                }, JsonOptions);
+                _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onCliSetup({encoded})");
+            });
+        }
+
+        // PtySession is one-shot (StartAsync throws on reuse, exit is sticky), so
+        // every relaunch in an existing tab needs a fresh instance. The UI re-sends
+        // the pane geometry when the overlay clears — the new PTY would otherwise
+        // sit on the 80x24 default. UI thread (field swap must not race handlers).
+        void ReplaceSession(AgentTab tab)
+        {
+            try { tab.Session.Dispose(); } catch { }
+            tab.Session = new PtySession();
+            WireSession(tab);
+        }
+
+        // The setup view's install button: run the CLI's official native installer
+        // in this tab's PTY so the user watches it live (and can Ctrl-C it). Its
+        // exit lands in OnSessionExited → HandleInstallerExit. UI thread.
+        void BeginCliInstall(AgentTab tab)
+        {
+            if (tab.Starting || tab.Session.IsRunning || tab.InstallerActive) return;
+            if (tab.CliSetupPhase == null) return;
+            tab.InstallerActive = true;
+            tab.CliSetupPhase = "installing";
+            PushCliSetup(tab); // UI drops the overlay and re-sends the pane size
+            ReplaceSession(tab); // the previous session may be a finished failed run
+            tab.Starting = true;
+            var command = tab.Cli.NativeInstallCommand;
+            System.Threading.Tasks.Task.Run(async () =>
+            {
+                try
+                {
+                    var cwd = Workspace.EnsureWorkspace();
+                    // Same wrappers the command is documented for: a login shell
+                    // (proxy/env vars) on unix, powershell on Windows.
+                    if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                        await tab.Session.StartAsync("powershell.exe", new[] { "-ExecutionPolicy", "Bypass", "-Command", command }, cwd).ConfigureAwait(false);
+                    else
+                        await tab.Session.StartAsync("/bin/bash", new[] { "-lc", command }, cwd).ConfigureAwait(false);
+                    Log.Write($"[CoRhino] Native installer for {tab.Cli.BinaryName} started in {tab.AgentId}.");
+                }
+                catch (Exception ex)
+                {
+                    Log.User($"[CoRhino] Installer start failed: {ex.GetType().Name}: {ex.Message}");
+                    Application.Instance?.AsyncInvoke(() =>
+                    {
+                        tab.InstallerActive = false;
+                        tab.CliSetupPhase = "failed";
+                        PushCliSetup(tab);
+                    });
+                }
+                finally { tab.Starting = false; }
+            });
+        }
+
+        // Installer PTY exited: the probe result (not the exit code) decides —
+        // "already installed" exits 0 without changing anything, and a user may
+        // have Ctrl-C'd after the binary landed. UI thread.
+        void HandleInstallerExit(AgentTab tab, int code)
+        {
+            if (!_tabs.TryGetValue(tab.AgentId, out var current) || !ReferenceEquals(current, tab))
+                return; // tab was closed while the installer ran
+            Log.Write($"[CoRhino] Installer for {tab.Cli.BinaryName} exited with code {code}; probing.");
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var found = CliResolver.Resolve(tab.Cli.BinaryName).cliPath != null;
+                Application.Instance?.AsyncInvoke(() =>
+                {
+                    if (!_tabs.TryGetValue(tab.AgentId, out var cur) || !ReferenceEquals(cur, tab)) return;
+                    if (tab.Starting || tab.Session.IsRunning || tab.InstallerActive) return;
+                    if (found)
+                    {
+                        RelaunchCliInTab(tab);
+                    }
+                    else
+                    {
+                        // Bottom banner, not the full overlay — the installer's
+                        // output stays readable for diagnosis.
+                        tab.CliSetupPhase = "failed";
+                        PushCliSetup(tab);
+                    }
+                });
+            });
+        }
+
+        // The setup view's re-check button (manual-install path). UI thread.
+        void RecheckCli(AgentTab tab)
+        {
+            if (tab.Starting || tab.Session.IsRunning || tab.InstallerActive) return;
+            if (tab.CliSetupPhase == null) return;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var found = CliResolver.Resolve(tab.Cli.BinaryName).cliPath != null;
+                Application.Instance?.AsyncInvoke(() =>
+                {
+                    if (!_tabs.TryGetValue(tab.AgentId, out var cur) || !ReferenceEquals(cur, tab)) return;
+                    if (tab.Starting || tab.Session.IsRunning || tab.InstallerActive) return;
+                    if (found) RelaunchCliInTab(tab);
+                    else
+                    {
+                        tab.CliSetupPhase = "failed";
+                        PushCliSetup(tab);
+                    }
+                });
+            });
+        }
+
+        // The CLI probes as present now — start it in this same tab (fresh PTY,
+        // wiped screen) and let the + menu learn it exists. UI thread.
+        void RelaunchCliInTab(AgentTab tab)
+        {
+            Log.Write($"[CoRhino] {tab.Cli.BinaryName} now resolves; launching in {tab.AgentId}.");
+            tab.CliSetupPhase = null;
+            // A fresh codex spawn is imminent again — rejoin the pending-codex
+            // guard (StartSession's missing branch dropped it), re-anchored to
+            // now so only rollouts from THIS launch window get blocked.
+            if (tab.Cli.Kind == AgentCliKind.Codex && tab.SessionId == null)
+            {
+                tab.CreatedAtUtc = DateTime.UtcNow;
+                PendingCodexTabs.Add(tab);
+            }
+            ReplaceSession(tab);
+            tab.Starting = true;
+            if (_webReady)
+                _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onSessionRestart({JsonSerializer.Serialize(tab.AgentId)})");
+            LaunchSessionInBackground(tab);
+            PushCliAvailability(); // un-grey the + menu without a panel reload
+        }
+
+        // The setup view's explicit "open a shell" escape hatch — the old silent
+        // fallback, now opt-in. A plain tab: its exit removes it as usual. UI thread.
+        void OpenShellInTab(AgentTab tab)
+        {
+            if (tab.Starting || tab.Session.IsRunning || tab.InstallerActive) return;
+            if (tab.CliSetupPhase == null) return;
+            tab.CliSetupPhase = null;
+            ReplaceSession(tab);
+            tab.Starting = true;
+            if (_webReady)
+                _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onSessionRestart({JsonSerializer.Serialize(tab.AgentId)})");
+            System.Threading.Tasks.Task.Run(async () =>
+            {
+                try
+                {
+                    var cwd = Workspace.EnsureWorkspace();
+                    var isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+                    var app = isWindows ? "cmd.exe" : "/bin/bash";
+                    var shellArgs = isWindows ? Array.Empty<string>() : new[] { "-l" };
+                    await tab.Session.StartAsync(app, shellArgs, cwd).ConfigureAwait(false);
+                    Log.Write($"[CoRhino] {app} spawned in {cwd} ({tab.AgentId}).");
+                }
+                catch (Exception ex)
+                {
+                    Log.User($"[CoRhino] Shell start failed: {ex.GetType().Name}: {ex.Message}");
+                    Application.Instance?.AsyncInvoke(() => RemoveTab(tab));
+                }
+                finally { tab.Starting = false; }
             });
         }
 
@@ -460,15 +670,36 @@ namespace CoRhino.Panel
                 var isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
                 if (string.IsNullOrEmpty(cliPath))
                 {
-                    var fallbackApp = isWindows ? "cmd.exe" : "/bin/bash";
-                    var fallbackArgs = isWindows ? Array.Empty<string>() : new[] { "-l" };
-                    Log.User($"[CoRhino] `{cli.BinaryName}` CLI not found on PATH. Falling back to {fallbackApp}.");
+                    // No silent shell fallback: an unexplained bash tab reads as
+                    // a broken panel. Show the setup view instead — install /
+                    // re-check / (explicit) shell live there.
+                    Log.User($"[CoRhino] `{cli.BinaryName}` CLI not found; showing the setup view.");
                     Log.Write("[CoRhino] PATH=" + (loginPath ?? "<none>"));
-                    await tab.Session.StartAsync(fallbackApp, fallbackArgs, cwd, env).ConfigureAwait(false);
-                    Log.Write($"[CoRhino] {fallbackApp} spawned in {cwd}");
+                    tab.CliSetupPhase = "missing";
+                    // No codex process is coming (yet), so this tab must not hold
+                    // the pending-codex guard — it would block resume/delete of
+                    // unrelated codex sessions for as long as the setup view sits
+                    // there. RelaunchCliInTab re-registers before a real launch.
+                    Application.Instance?.AsyncInvoke(() => PendingCodexTabs.Remove(tab));
+                    PushCliSetup(tab);
                 }
                 else
                 {
+                    // A CLI resolved through the well-known-dir fallback
+                    // (~/.local/bin — see CliResolver) may not be on the login
+                    // PATH yet (the native installers write their PATH line to a
+                    // profile the bash -lc probe doesn't read). Prepend its dir
+                    // so the CLI's own subprocesses find it too.
+                    var binDir = Path.GetDirectoryName(cliPath);
+                    if (!string.IsNullOrEmpty(binDir))
+                    {
+                        var basePath = env.TryGetValue("PATH", out var p)
+                            ? p
+                            : Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+                        if (!basePath.Split(Path.PathSeparator).Contains(binDir))
+                            env["PATH"] = binDir + Path.PathSeparator + basePath;
+                    }
+
                     // Session-id discovery matches "a fresh rollout in our cwd" —
                     // with all codex tabs sharing one cwd, two in-flight launches
                     // would be indistinguishable and could swap ids. The gate
@@ -493,6 +724,7 @@ namespace CoRhino.Panel
                             await tab.Session.StartAsync(cliPath!, args, cwd, env).ConfigureAwait(false);
                         }
                         Log.Write($"[CoRhino] {cli.BinaryName} spawned in {cwd}");
+                        tab.CliSetupPhase = null; // a real CLI is running now
 
                         // Codex generates its own session id — recover it from the
                         // rollout store so the tab becomes resumable and its layer
@@ -665,6 +897,9 @@ namespace CoRhino.Panel
                         {
                             AnnounceTab(tab);
                             FlushPending(tab);
+                            // agent-1 typically resolves (or fails to) before the
+                            // UI boots — replay its setup state onto the fresh DOM.
+                            PushCliSetup(tab);
                         }
                         PushCliAvailability();
                         break;
@@ -680,6 +915,19 @@ namespace CoRhino.Panel
                     case "closeTab":
                         if (root.TryGetProperty("agentId", out var closeIdEl))
                             CloseTab(closeIdEl.GetString());
+                        break;
+
+                    // Setup-view actions (all no-ops unless the tab is in setup).
+                    case "installCli":
+                        if (TryGetTab(root, out var installTab)) BeginCliInstall(installTab!);
+                        break;
+
+                    case "recheckCli":
+                        if (TryGetTab(root, out var recheckTab)) RecheckCli(recheckTab!);
+                        break;
+
+                    case "openShellInTab":
+                        if (TryGetTab(root, out var shellTab)) OpenShellInTab(shellTab!);
                         break;
 
                     case "stdin":

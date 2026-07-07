@@ -736,6 +736,33 @@ spawn トレース・env keys・セッションスキャン等の診断ノイズ
 - 「save-rhino-skill がない」の初報は誤検知も含んでいた: codex の全列挙応答が plugin 名前空間付き
   スキル（`corhino:save-rhino-skill`）を省略しており、ロード自体は成功していた
 
+### D19: CLI 未解決タブはセットアップビュー（サイレントシェルフォールバック廃止・2026-07-07）
+
+- 旧挙動: CLI が PATH に無いタブは黙って `bash -l` / `cmd.exe` にフォールバック。初見には
+  「なぜかただのシェルが開いた」= 故障にしか見えず、理由はログを見ないと分からなかった
+- 新挙動: PTY を起動せずタブ内に HTML セットアップビューを表示。公式ネイティブインストーラの
+  ワンライナーを表示・コピー・**その場で実行**（そのタブの PTY に出力を流す）でき、exit 後の
+  再プローブ成功で同じタブに CLI が起動する。手動導入向け「再チェック」、旧フォールバック相当の
+  「かわりにシェルを開く」は明示操作として残置。詳細は
+  [`plans/cli-onboarding-design.md`](plans/cli-onboarding-design.md)
+- **npm ではなくネイティブインストーラを採用**（ユーザー指定 + 調査 2026-07-07）:
+  claude = `curl -fsSL https://claude.ai/install.sh | bash`（公式第一推奨・自動更新付き）、
+  codex = `curl -fsSL https://chatgpt.com/codex/install.sh | sh`（README 筆頭）。
+  Windows は各 `install.ps1` を `powershell -Command` で。表示と実行は同一文字列
+  （`IAgentCli.NativeInstallCommand`）で乖離させない
+- **落とし穴（実測）**: 両インストーラは `~/.local/bin` に配置し PATH 追記は**ユーザーのログイン
+  シェルのプロファイル**（zsh なら `.zprofile`/`.zshrc`）に行う。CoRhino のプローブは
+  `/bin/bash -lc` なので導入直後でも `command -v` が外れる → `CliResolver` に `~/.local/bin/<bin>`
+  直チェックのフォールバックを追加し、この経路で解決した spawn は `PATH` に同ディレクトリを前置
+- インストーラ exit の成否判定は exit code ではなく**再プローブ**（「導入済みで exit 0」や
+  「Ctrl-C したが本体は配置済み」があるため）。installer の exit は `InstallerActive` フラグで
+  `OnSessionExited` から分岐し、タブ削除ではなく再プローブ→再起動フローへ
+- 失敗時は全面オーバーレイではなく**下端バナー**（インストーラ出力を診断のため読めるまま残す）
+- CLI 起動成功時に `PushCliAvailability` を再送し、＋メニューのグレーアウトもパネル再起動なしで解消
+- Codex レビューゲート: Medium 3 件（relaunch 時 resize 再送漏れ / `PushCliSetup` の stale-tab
+  チェック欠落 / setup 状態 codex タブの pending guard 保持）を修正 → LGTM（詳細は
+  [`plans/cli-onboarding-design.md`](plans/cli-onboarding-design.md) のレビュー節）
+
 ### 検証・レビュー体制（このフェーズ群で確立したこと）
 
 - 各 Phase 末尾に Codex レビューゲート（LGTM まで反復）。計 5 フェーズで High 指摘 4 件・

@@ -34,7 +34,9 @@ WIP / pre-alpha のため、ここの項目は予告なく増減・並び替え�
   - **Windows 対応ゲート**: `~/.claude/projects` の slug エンコーディング（`C:\` の `\`・`:`）が未検証。
     codex 分も同様: rollout パス・config.toml パースの Windows パス、および **workspace スキル symlink**
     （Developer Mode / 権限が無いと `CreateSymbolicLink` が失敗する — junction かコピーへのフォールバック要検討。
-    現状は一度だけログして codex タブがスキル無しで動く）。Windows で機能を有効と言う前に必須。
+    現状は一度だけログして codex タブがスキル無しで動く）。CLI セットアップビュー（D19）の
+    PowerShell インストーラ経路（`install.ps1` / `%USERPROFILE%\.local\bin` 直チェック）も未実測。
+    Windows で機能を有効と言う前に必須。
   - **`/clear`（claude）/ `/new`（codex）の ID 回転追跡**: タブの `SessionId` が stale になる（リネーム・レイヤ指示が旧 ID に付く）。
   - **タブ構成の自動復元**: パネル再オープン時に前回タブを `--continue` で復元（今回スコープ外と決定）。
   - **クロスプロセスの二重 resume ガード**: `LiveSessionIds` はプロセス内のみ。Windows の 2 Rhino から

@@ -23,6 +23,12 @@ type TabSessionPayload = { agentId: string; sessionId: string }
 // Which CLIs resolve on PATH (probed once per panel boot; missing ones grey
 // out in the + menu).
 type CliAvailabilityPayload = { claude: boolean; codex: boolean }
+// A tab's CLI didn't resolve — drive the in-pane setup view. 'missing' shows
+// the full overlay, 'installing' clears it (installer output streams in the
+// xterm), 'failed' shows a bottom banner so that output stays readable.
+// command is the official native-installer one-liner (display + copy; the
+// install button makes the host run exactly this string).
+type CliSetupPayload = { agentId: string; phase: 'missing' | 'installing' | 'failed'; cli: CliKind; command: string }
 
 declare global {
   interface Window {
@@ -48,6 +54,8 @@ declare global {
       onTabSession: (payload: TabSessionPayload) => void
       // PATH probe result for the + menu.
       onCliAvailability: (payload: CliAvailabilityPayload) => void
+      // A tab's CLI setup state changed (missing / installing / failed).
+      onCliSetup: (payload: CliSetupPayload) => void
     }
     chrome?: { webview?: { postMessage: (msg: string) => void } }
   }
@@ -66,6 +74,9 @@ type Outbound =
   | { type: 'resumeSession'; sessionId: string }
   | { type: 'renameSession'; sessionId: string; name: string }
   | { type: 'deleteSession'; sessionId: string }
+  | { type: 'installCli'; agentId: string }
+  | { type: 'recheckCli'; agentId: string }
+  | { type: 'openShellInTab'; agentId: string }
   | { type: 'debug'; message: string }
 
 function post(msg: Outbound) {
@@ -177,6 +188,48 @@ function boot() {
   .clibadge.claude { color: #d0846a; }
   .clibadge.codex { color: #6f9fdf; }
   .tab .clibadge { flex: 0 0 auto; }
+  /* CLI setup view: full overlay (missing) or bottom banner (failed). */
+  .clisetup {
+    position: absolute; inset: 4px; z-index: 5;
+    display: flex; align-items: center; justify-content: center;
+    background: #111; color: #ccc;
+    font: 12px ui-monospace, Menlo, monospace; user-select: none;
+  }
+  .clisetup.failed {
+    top: auto; align-items: flex-end; justify-content: stretch;
+    background: transparent; pointer-events: none;
+  }
+  .clisetup-box {
+    display: flex; flex-direction: column; gap: 10px;
+    max-width: 480px; min-width: 0; padding: 18px 22px;
+  }
+  .clisetup.failed .clisetup-box {
+    pointer-events: auto; flex: 1 1 auto; max-width: none;
+    padding: 10px 14px; background: #1c1616; border-top: 1px solid #5a3535;
+  }
+  .clisetup-title { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #eee; }
+  .clisetup-hint { color: #999; line-height: 1.5; }
+  .clisetup-error { color: #e08585; line-height: 1.5; }
+  .clisetup-cmd {
+    display: flex; align-items: center; gap: 8px;
+    background: #1a1a1a; border: 1px solid #2f2f2f; border-radius: 4px; padding: 6px 8px;
+  }
+  .clisetup-cmd code {
+    flex: 1 1 auto; overflow-x: auto; white-space: nowrap; color: #d8d8d8;
+    font: 11px ui-monospace, Menlo, monospace; user-select: text;
+  }
+  .clisetup-cmd code::-webkit-scrollbar { height: 0; }
+  .clisetup button {
+    background: #262626; color: #ccc; border: 1px solid #3a3a3a; border-radius: 4px;
+    padding: 4px 12px; cursor: pointer; flex: 0 0 auto;
+    font: 12px ui-monospace, Menlo, monospace;
+  }
+  .clisetup button:hover { background: #333; color: #fff; }
+  .clisetup button.primary { background: #2d4a2d; border-color: #3f663f; color: #dfeede; }
+  .clisetup button.primary:hover { background: #385938; }
+  .clisetup-actions { display: flex; gap: 8px; }
+  .clisetup-shell { color: #777; text-decoration: underline; cursor: pointer; align-self: flex-start; }
+  .clisetup-shell:hover { color: #aaa; }
   #main { display: flex; flex-direction: row; flex: 1 1 auto; overflow: hidden; }
   #terminals { position: relative; flex: 1 1 auto; overflow: hidden; }
   .termpane { position: absolute; inset: 0; padding: 4px; box-sizing: border-box; }
@@ -334,6 +387,9 @@ ${isWindowsWebView2 ? `
     labelEl: HTMLElement
     lastCols: number
     lastRows: number
+    // The CLI setup view covering (missing) or bannering (failed) this pane;
+    // null while the tab runs a real PTY.
+    setupEl: HTMLElement | null
   }
 
   const tabs = new Map<string, Tab>()
@@ -396,7 +452,7 @@ ${isWindowsWebView2 ? `
 
     const { term, fit } = createTerminal()
     const { tabEl, labelEl } = buildTabButton(agentId, label, cli)
-    const tab: Tab = { agentId, sessionId, customName, cli, term, fit, pane, tabEl, labelEl, lastCols: term.cols, lastRows: term.rows }
+    const tab: Tab = { agentId, sessionId, customName, cli, term, fit, pane, tabEl, labelEl, lastCols: term.cols, lastRows: term.rows, setupEl: null }
     tabs.set(agentId, tab)
     tabscroll.insertBefore(tab.tabEl, addBtn)
 
@@ -515,6 +571,104 @@ ${isWindowsWebView2 ? `
     }
   }
 
+  // ---- CLI setup view (missing-CLI onboarding) -----------------------------
+  // Rendered into the tab's pane when its CLI didn't resolve: 'missing' is a
+  // full centered overlay, 'failed' a bottom banner that leaves the installer
+  // output readable. Cleared when a real PTY starts (onSessionRestart) or the
+  // installer takes over the terminal ('installing').
+
+  function clearCliSetup(tab: Tab, resendSize: boolean) {
+    tab.setupEl?.remove()
+    tab.setupEl = null
+    // The host swaps in a fresh PTY on every relaunch (PtySession is one-shot),
+    // which boots on the 80x24 default — re-report the pane's real geometry.
+    // Unconditionally: the overlay may already be gone (install flow cleared it
+    // at 'installing'), but the relaunch after the installer still needs a size.
+    if (resendSize) post({ type: 'resize', agentId: tab.agentId, cols: tab.term.cols, rows: tab.term.rows })
+  }
+
+  function renderCliSetup(tab: Tab, payload: CliSetupPayload) {
+    clearCliSetup(tab, false)
+    const failed = payload.phase === 'failed'
+    const displayName = payload.cli === 'codex' ? 'Codex' : 'Claude Code'
+
+    const box = document.createElement('div')
+    box.className = 'clisetup-box'
+
+    if (failed) {
+      const err = document.createElement('div')
+      err.className = 'clisetup-error'
+      err.textContent = L.installStillMissing
+      box.appendChild(err)
+    } else {
+      const title = document.createElement('div')
+      title.className = 'clisetup-title'
+      const badge = document.createElement('span')
+      badge.className = `clibadge ${payload.cli}`
+      badge.textContent = payload.cli === 'codex' ? '◆' : '●'
+      title.appendChild(badge)
+      title.appendChild(document.createTextNode(L.cliMissingTitle(displayName)))
+      box.appendChild(title)
+      const hint = document.createElement('div')
+      hint.className = 'clisetup-hint'
+      hint.textContent = L.cliMissingHint(payload.cli)
+      box.appendChild(hint)
+    }
+
+    const cmdRow = document.createElement('div')
+    cmdRow.className = 'clisetup-cmd'
+    const code = document.createElement('code')
+    code.textContent = payload.command
+    cmdRow.appendChild(code)
+    const copyBtn = document.createElement('button')
+    copyBtn.textContent = L.installCopy
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(payload.command)
+      } catch {
+        // WKWebView can deny the async clipboard outside a "secure" context;
+        // the legacy execCommand path still works from a click handler.
+        const ta = document.createElement('textarea')
+        ta.value = payload.command
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        ta.remove()
+      }
+      copyBtn.textContent = L.installCopied
+      window.setTimeout(() => { copyBtn.textContent = L.installCopy }, 1500)
+    })
+    cmdRow.appendChild(copyBtn)
+    box.appendChild(cmdRow)
+
+    const actions = document.createElement('div')
+    actions.className = 'clisetup-actions'
+    const installBtn = document.createElement('button')
+    installBtn.className = 'primary'
+    installBtn.textContent = L.installRun
+    installBtn.addEventListener('click', () => post({ type: 'installCli', agentId: tab.agentId }))
+    const recheckBtn = document.createElement('button')
+    recheckBtn.textContent = L.installRecheck
+    recheckBtn.addEventListener('click', () => post({ type: 'recheckCli', agentId: tab.agentId }))
+    actions.appendChild(installBtn)
+    actions.appendChild(recheckBtn)
+    box.appendChild(actions)
+
+    if (!failed) {
+      const shell = document.createElement('a')
+      shell.className = 'clisetup-shell'
+      shell.textContent = L.openShellInstead
+      shell.addEventListener('click', () => post({ type: 'openShellInTab', agentId: tab.agentId }))
+      box.appendChild(shell)
+    }
+
+    const overlay = document.createElement('div')
+    overlay.className = failed ? 'clisetup failed' : 'clisetup'
+    overlay.appendChild(box)
+    tab.pane.appendChild(overlay)
+    tab.setupEl = overlay
+  }
+
   // Debounced fit for the active pane. Without debouncing, a single resize can chain
   // into a feedback loop: claude paints → scrollbar appears → ResizeObserver fires →
   // fit() shrinks cols → PTY resize → claude repaints → loop. The guard on (cols,rows)
@@ -586,7 +740,10 @@ ${isWindowsWebView2 ? `
       tabs.get(agentId)?.term.write(text)
     },
     onSessionRestart(agentId: string) {
-      tabs.get(agentId)?.term.reset()
+      const tab = tabs.get(agentId)
+      if (!tab) return
+      clearCliSetup(tab, true)
+      tab.term.reset()
     },
     onTabClosed(agentId: string) {
       removeTab(agentId)
@@ -618,6 +775,17 @@ ${isWindowsWebView2 ? `
         closeCliMenu()
         toggleCliMenu()
       }
+    },
+    onCliSetup(payload: CliSetupPayload) {
+      const tab = tabs.get(payload.agentId)
+      if (!tab) return
+      // 'installing': the installer owns the terminal now — just clear the
+      // overlay (and re-send the size for the fresh PTY underneath).
+      if (payload.phase === 'installing') {
+        clearCliSetup(tab, true)
+        return
+      }
+      renderCliSetup(tab, payload)
     },
   }
 
