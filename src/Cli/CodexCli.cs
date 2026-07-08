@@ -93,7 +93,8 @@ namespace CoRhino.Cli
 
             // Approval-free but sandboxed: never prompt for shell commands
             // (failures return to the model), writes confined to the workspace
-            // cwd + tmp. The panel's real tool path is MCP (unsandboxed, already
+            // cwd + tmp + the user skill store (writable_roots below). The
+            // panel's real tool path is MCP (unsandboxed, already
             // auto via default_tools_approval_mode below) — codex's own default
             // (on-request) would nag for every shell command, which defeats the
             // "just open the panel" goal. Deliberately NOT --dangerously-*: the
@@ -102,6 +103,18 @@ namespace CoRhino.Cli
             args.Add("never");
             args.Add("-s");
             args.Add("workspace-write");
+
+            // The user skill store lives outside the workspace cwd, so the
+            // sandbox denies the writes save-rhino-skill needs — including
+            // through the workspace symlinks, which the sandbox resolves to
+            // real paths before judging (spike-verified, codex sandbox
+            // 0.143.0). Grant the store as an extra writable root. Forward
+            // slashes: the -c value is parsed as TOML, where backslash
+            // escapes proved fragile (spike: \\-escaped paths failed to
+            // parse as an array and fell back to a literal string).
+            args.Add("-c");
+            args.Add("sandbox_workspace_write.writable_roots=[" +
+                TomlString(Workspace.UserSkillsRoot.Replace('\\', '/')) + "]");
 
             // (1) Plugins inject MCP servers (and tools) that config.toml never
             // mentions — disable the whole feature for this session.

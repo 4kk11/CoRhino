@@ -398,7 +398,9 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
 - `ClaudeCli.cs` … 旧 `StartSession` の claude 固有部を移設（`--strict-mcp-config` + `--mcp-config` /
   `--plugin-dir` ×2 / `--session-id`|`--resume` / `--append-system-prompt`。順序も旧実装と同一）。
   レイヤは sessionId から決定的導出（旧 `LayerFor` と同じ `s-<先頭8桁>`）。
-- `CodexCli.cs` … codex アダプタ。承認なしのサンドボックス内自動実行（`-a never -s workspace-write`）。
+- `CodexCli.cs` … codex アダプタ。承認なしのサンドボックス内自動実行（`-a never -s workspace-write`、
+  書き込みは workspace+tmp に加えユーザースキル置き場 `~/.corhino/skills` を
+  `sandbox_workspace_write.writable_roots` で許可 — save-rhino-skill の保存先が workspace 外のため）。
   隔離は `--disable plugins` + ユーザー config.toml の実在サーバ
   `enabled=false` + rhino 追加の合成（`-c 'mcp_servers={...}'` はマージであり全置換不可）。レイヤ指示は
   `-c developer_instructions`（追記・TUI 不可視）。スキルは workspace の symlink 2 本

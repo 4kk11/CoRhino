@@ -688,6 +688,14 @@ spawn トレース・env keys・セッションスキャン等の診断ノイズ
   実行しつつサンドボックスは維持（書き込みは workspace+tmp、失敗はモデルに返る）。`--full-auto` は
   0.142.5 に存在せず `on-failure` も deprecated のため、この組が現行の「サンドボックス付き自動」。
   `--dangerously-*` は使わない
+- **スキル置き場を writable root に追加（2026-07-08・実機フィードバック起点）**: `workspace-write` は
+  cwd+tmp 以外への書き込みを拒否するため、`save-rhino-skill` の保存先 `~/.corhino/skills` に書けず
+  codex セッションはスキルを「読めるが書けない」状態だった。workspace の symlink
+  （`.agents/skills`）経由の書き込みも不可 — サンドボックスは実パスに解決して判定する
+  （`codex sandbox` 0.143.0 でスパイク検証）。→ `-c sandbox_workspace_write.writable_roots=
+  ["<UserSkillsRoot>"]` を合成に追加。パスはフォワードスラッシュで渡す（`\\` エスケープの TOML は
+  配列としてパースされず literal string 扱いに落ちる事象を実測）。サンドボックス自体は維持
+  （`--dangerously-*` 不使用の方針は不変）
 
 ### D15: codex セッション ID の事後発見と帰属保証
 
