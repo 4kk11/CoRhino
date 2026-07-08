@@ -247,6 +247,22 @@ ${isWindowsWebView2 ? `
      1x1 keeps the layout stable and the IME working.
      macOS is excluded: there any clamp causes dropped keystrokes instead. */
   .xterm-helper-textarea { max-width: 1px; max-height: 1px; overflow: hidden !important; }
+  /* IME anchor freeze (B13→B16→B17): xterm re-anchors the composition view and
+     the helper textarea to the buffer cursor on EVERY render. The cursor is the
+     right place at compositionstart (the user is typing in the input row), but
+     while codex streams, its END-OF-FRAME cursor position genuinely moves
+     (ratatui parks it wherever the paint ended; Ink/claude re-homes it to the
+     input box) — so cursor-following makes the candidate window teleport even
+     with atomic frames (B14). Fixed corner anchors (B13/B15) were wrong too:
+     far from the real input row, covering other UI. The answer is to FREEZE the
+     anchor per composition: compositionstart captures the cursor cell into
+     --ime-x/y on the pane (same coordinate space xterm writes inline), and this
+     rule outweighs xterm's per-render inline styles for the duration. */
+  .termpane.composing .composition-view,
+  .termpane.composing .xterm-helper-textarea {
+    left: var(--ime-x) !important;
+    top: var(--ime-y) !important;
+  }
 ` : ''}
 `
   document.head.appendChild(style)
@@ -390,6 +406,8 @@ ${isWindowsWebView2 ? `
     // The CLI setup view covering (missing) or bannering (failed) this pane;
     // null while the tab runs a real PTY.
     setupEl: HTMLElement | null
+    // Synchronized-update frame assembly state (see writeSynced).
+    sync: { pending: string; active: boolean; timer: number | null }
   }
 
   const tabs = new Map<string, Tab>()
@@ -452,7 +470,7 @@ ${isWindowsWebView2 ? `
 
     const { term, fit } = createTerminal()
     const { tabEl, labelEl } = buildTabButton(agentId, label, cli)
-    const tab: Tab = { agentId, sessionId, customName, cli, term, fit, pane, tabEl, labelEl, lastCols: term.cols, lastRows: term.rows, setupEl: null }
+    const tab: Tab = { agentId, sessionId, customName, cli, term, fit, pane, tabEl, labelEl, lastCols: term.cols, lastRows: term.rows, setupEl: null, sync: { pending: '', active: false, timer: null } }
     tabs.set(agentId, tab)
     tabscroll.insertBefore(tab.tabEl, addBtn)
 
@@ -476,6 +494,24 @@ ${isWindowsWebView2 ? `
       const ta = term.textarea
       ta?.addEventListener('compositionstart', () => { composing = true })
       ta?.addEventListener('compositionend', () => { composing = false })
+    } else {
+      // B17: freeze the IME anchor for each composition (see the .composing CSS
+      // above). The capture happens at compositionstart — the one moment the
+      // cursor is reliably at the input row. Cell metrics come from xterm's
+      // private render service (same values updateCompositionElements uses);
+      // if that internal shape ever changes, skip the freeze and fall back to
+      // xterm's cursor-following.
+      const ta = term.textarea
+      ta?.addEventListener('compositionstart', () => {
+        const cell = (term as any)._core?._renderService?.dimensions?.css?.cell
+        if (!cell?.width || !cell?.height) return
+        const buf = term.buffer.active
+        const col = Math.min(buf.cursorX, term.cols - 1)
+        pane.style.setProperty('--ime-x', `${col * cell.width}px`)
+        pane.style.setProperty('--ime-y', `${buf.cursorY * cell.height}px`)
+        pane.classList.add('composing')
+      })
+      ta?.addEventListener('compositionend', () => pane.classList.remove('composing'))
     }
 
     resizeObserver.observe(pane)
@@ -559,6 +595,7 @@ ${isWindowsWebView2 ? `
   function removeTab(agentId: string) {
     const tab = tabs.get(agentId)
     if (!tab) return
+    if (tab.sync.timer != null) window.clearTimeout(tab.sync.timer)
     resizeObserver.unobserve(tab.pane)
     tab.term.dispose()
     tab.pane.remove()
@@ -569,6 +606,78 @@ ${isWindowsWebView2 ? `
       const next = tabs.keys().next()
       if (!next.done) activateTab(next.value)
     }
+  }
+
+  // ---- Synchronized-update frame assembly ----------------------------------
+  // TUIs (codex/ratatui) and modern ConPTY wrap each repaint in DEC private
+  // mode 2026 (CSI ? 2026 h … l, "synchronized updates"): apply the whole
+  // frame atomically or not at all. xterm.js 5.5 does NOT implement the mode,
+  // so mid-frame states (lines cleared but not yet redrawn) render whenever a
+  // frame spans multiple onPtyData chunks — under ConPTY's chatty repaint
+  // stream that reads as violent flicker (design-history B13/B14). We assemble
+  // frames here instead: buffer from 2026h until the matching 2026l, then hand
+  // xterm the complete frame in ONE write. The markers themselves pass through
+  // (xterm ignores unknown modes). A timeout backstops a frame whose close
+  // marker never arrives (app died mid-frame, marker mangled) so output can
+  // never wedge; it also drains a held marker-prefix tail on a stream that
+  // pauses mid-escape.
+  const SYNC_BEGIN = '\x1b[?2026h'
+  const SYNC_END = '\x1b[?2026l'
+  const SYNC_FLUSH_MS = 80
+
+  function writeSynced(tab: Tab, text: string) {
+    const s = tab.sync
+    s.pending += text
+    for (;;) {
+      if (s.active) {
+        const end = s.pending.indexOf(SYNC_END)
+        if (end === -1) break // frame still open — keep buffering
+        const cut = end + SYNC_END.length
+        tab.term.write(s.pending.slice(0, cut))
+        s.pending = s.pending.slice(cut)
+        s.active = false
+      } else {
+        const begin = s.pending.indexOf(SYNC_BEGIN)
+        if (begin === -1) {
+          // Flush everything except a tail that could be a split marker.
+          const keep = partialMarkerTail(s.pending)
+          if (s.pending.length > keep) {
+            tab.term.write(keep === 0 ? s.pending : s.pending.slice(0, -keep))
+            s.pending = keep === 0 ? '' : s.pending.slice(-keep)
+          }
+          break
+        }
+        if (begin > 0) tab.term.write(s.pending.slice(0, begin))
+        s.pending = s.pending.slice(begin)
+        s.active = true
+      }
+    }
+    if (s.pending.length > 0) {
+      if (s.timer == null) s.timer = window.setTimeout(() => flushSync(tab), SYNC_FLUSH_MS)
+    } else if (s.timer != null) {
+      window.clearTimeout(s.timer)
+      s.timer = null
+    }
+  }
+
+  // Length of the longest suffix of `text` that is a proper prefix of the
+  // sync markers ('\x1b[?2026' covers both h and l endings).
+  function partialMarkerTail(text: string): number {
+    const max = Math.min(SYNC_BEGIN.length - 1, text.length)
+    for (let k = max; k > 0; k--) {
+      if (text.endsWith(SYNC_BEGIN.slice(0, k))) return k
+    }
+    return 0
+  }
+
+  function flushSync(tab: Tab) {
+    const s = tab.sync
+    s.timer = null
+    if (s.pending) {
+      tab.term.write(s.pending)
+      s.pending = ''
+    }
+    s.active = false
   }
 
   // ---- CLI setup view (missing-CLI onboarding) -----------------------------
@@ -737,12 +846,18 @@ ${isWindowsWebView2 ? `
       addTab(payload)
     },
     onPtyData(agentId: string, text: string) {
-      tabs.get(agentId)?.term.write(text)
+      const tab = tabs.get(agentId)
+      if (tab) writeSynced(tab, text)
     },
     onSessionRestart(agentId: string) {
       const tab = tabs.get(agentId)
       if (!tab) return
       clearCliSetup(tab, true)
+      // Drop any half-assembled frame from the dead session — it must not
+      // replay into the fresh one.
+      if (tab.sync.timer != null) { window.clearTimeout(tab.sync.timer); tab.sync.timer = null }
+      tab.sync.pending = ''
+      tab.sync.active = false
       tab.term.reset()
     },
     onTabClosed(agentId: string) {

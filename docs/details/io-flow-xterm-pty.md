@@ -146,12 +146,15 @@ sequenceDiagram
    始めることがある。`_webReady` が立つまで**そのタブの `tab.Pending`** キューに溜め、`ready` 受信時に各タブを
    `onTabCreated` で announce してから `FlushPending(tab)` でまとめて流す。これで起動直後のバナー出力が欠けない。
 
-5. **UI 側で描画** — 注入された JS が `window.CoRhinoPanel.onPtyData(agentId, text)` を呼ぶ:
-   ```ts
-   onPtyData(agentId, text) { tabs.get(agentId)?.term.write(text) }
-   ```
-   該当タブの `term.write` が ANSI エスケープを解釈して描画する。`convertEol: true` で、Windows ConPTY が出す
-   bare `\n` を `\r\n` に合成し階段化を防ぐ。
+5. **UI 側で描画** — 注入された JS が `window.CoRhinoPanel.onPtyData(agentId, text)` を呼び、
+   **`writeSynced(tab, text)` を経由して** `term.write` へ渡す。`writeSynced` は synchronized update
+   （DEC private mode 2026）のフレーム組立バッファ: TUI / ConPTY は再描画1回分を `CSI ?2026h … ?2026l` で
+   括って出すが、xterm.js 5.5 はこのモードを実装していないため、フレームが `onPtyData` チャンクを跨ぐと
+   「消去済み・未再描画」の中間状態がそのまま描画されてちらつく（design-history B14）。`?2026h` から
+   対応する `?2026l` までを溜め、**完成フレームを 1 回の `term.write`** で渡すことでアトミックに適用する。
+   閉じマーカーが来ないフレームは 80ms タイムアウトで強制フラッシュ（出力が詰まらない保証）。
+   マーカーがチャンク境界で割れるケースは末尾の部分一致 tail を持ち越して吸収する。
+   `convertEol: true` で、Windows ConPTY が出す bare `\n` を `\r\n` に合成し階段化を防ぐ。
 
 ---
 

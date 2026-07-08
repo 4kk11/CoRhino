@@ -478,12 +478,28 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
   **必ず `textContent`**。skills と違い一覧はタブ非依存（`handleSkillsList` のようなアクティブタブ
   フィルタは無い）。
 - xterm 設定: `convertEol: true`。Windows ConPTY の bare `\n` 階段化を `\r\n` 合成で吸収。
+- **synchronized update のフレーム組立（`writeSynced`）**: PTY 出力は `term.write` に直行せず、
+  `CSI ?2026h … ?2026l`（DEC 2026）で括られた再描画フレームを完成まで溜めて **1 回の write** で渡す。
+  xterm.js 5.5 は 2026 を実装していないため、これをしないとフレームがチャンク境界を跨いだ瞬間の
+  中間状態（クリア済み未描画）が描画されてちらつく（→ B14）。閉じマーカー欠落は 80ms で強制フラッシュ。
+  詳細は [details/io-flow-xterm-pty.md](details/io-flow-xterm-pty.md) 方向②-5。
 - **macOS のキー欠落対策**: capture-phase の `keydown` で印字可能キーを先取りして**アクティブタブの** `term.input()` に流し、
   `input`/`beforeinput` を握り潰す（"rhino"→"rhn", xterm #5374）。IME 合成中は素通し。合成状態は各タブ生成時に
   textarea へ付けた compositionstart/end で共有フラグ管理（フォーカスは常にアクティブタブのみ）。
-- **Windows の IME 対策**: 合成中に helper textarea が伸びる横スクロールを、textarea を **1×1 px** にクランプして防ぐ
-  （Windows 限定）。0×0 は xterm が「IME が壊れる」と警告する条件（`CompositionHelper` は `Math.max(bounds, 1)` で 1px
-  下限を保証）で、日本語 IME が確定済み先頭語を毎回再送する重複バグが出た（→ [design-history.md](design-history.md) B4）。
+- **Windows の IME 対策**（いずれも Windows 限定 CSS）:
+  - **サイズの 1×1 px クランプ**: 合成中に helper textarea が伸びる横スクロールを防ぐ。0×0 は xterm が
+    「IME が壊れる」と警告する条件（`CompositionHelper` は `Math.max(bounds, 1)` で 1px 下限を保証）で、
+    日本語 IME が確定済み先頭語を毎回再送する重複バグが出た（→ [design-history.md](design-history.md) B4）。
+  - **合成単位のアンカー凍結（B17）**: xterm は合成中、composition view と textarea を render のたびに
+    バッファカーソル位置へ再アンカーする（`CompositionHelper.updateCompositionElements` が `onRender` 配線）。
+    カーソルは compositionstart の瞬間は必ず入力行にあるが、codex（ratatui）はストリーミング中
+    **フレーム末尾のカーソルを描画終端に置き去りにする**ため（claude/Ink は入力欄に戻す）、
+    アトミック適用（B14）後もカーソル追従では候補ウィンドウが飛ぶ。そこで compositionstart で
+    カーソルセルを `--ime-x/y`（xterm が inline で書くのと同じ座標系）としてペインに記録し、
+    `.composing` 中はその値を `!important` で優先 — **合成 1 回のあいだアンカーを凍結**する。
+    compositionend で解除。cell 寸法は xterm 内部の render service から取る（形が変わったら
+    凍結をスキップして素の追従にフォールバック）。経緯: 隅固定（B13/B15）は入力行から遠く被りも
+    発生 → 追従に戻す（B16）→ codex の置き去りカーソルが残件 → 凍結（B17）。
 - **リサイズのデバウンス**: `#terminals` を観測する単一 `ResizeObserver` → 80ms デバウンス → **アクティブタブ**を `fit()`。
   paint→scrollbar→resize→repaint のループを断つ。
 
@@ -760,7 +776,7 @@ RhinoMCP ホストは**ドキュメント単位**。`EndOpenDocument` / `NewDocu
 | ネイティブ dylib | `lipo` で arm64+x64 ユニバーサル化 | win-x64 native をコピー |
 | yak の場所 | `<Rhino.app>/Contents/Resources/bin/yak` | Rhino System dir の `yak.exe` |
 | 改行 | PTY が `\n`→`\r\n` 変換 | ConPTY は変換しない → xterm `convertEol` で吸収 |
-| キー入力 | helper textarea 欠落対策（keydown 先取り） | 既定経路 + IME 用 textarea クランプ |
+| キー入力 | helper textarea 欠落対策（keydown 先取り） | 既定経路 + IME 用 textarea 1×1 クランプ（アンカーはカーソル追従・B16） |
 | plugin dir | `~/Library/.../MacPlugIns/CoRhino` | `%APPDATA%\McNeel\Rhinoceros\myplugins\CoRhino` |
 
 ---
