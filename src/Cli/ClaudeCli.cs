@@ -24,6 +24,14 @@ namespace CoRhino.Cli
             System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)
                 ? "irm https://claude.ai/install.ps1 | iex"
                 : "curl -fsSL https://claude.ai/install.sh | bash";
+        // ~/.local/bin on every OS — the native installer's only target.
+        public IReadOnlyList<string> WellKnownBinaryPaths => new[]
+        {
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin",
+                System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)
+                    ? "claude.exe" : "claude"),
+        };
         public bool SupportsSkillsDrawer => true;
         public bool SupportsSkillsReload => true;          // /plugin reload-plugins
         public bool LoadsSkillsViaWorkspaceMount => false; // --plugin-dir ×2 (user + cc-plugin)

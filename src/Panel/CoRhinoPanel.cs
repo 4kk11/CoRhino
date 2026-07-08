@@ -482,7 +482,7 @@ namespace CoRhino.Panel
             Log.Write($"[CoRhino] Installer for {tab.Cli.BinaryName} exited with code {code}; probing.");
             System.Threading.Tasks.Task.Run(() =>
             {
-                var found = CliResolver.Resolve(tab.Cli.BinaryName).cliPath != null;
+                var found = CliResolver.Resolve(tab.Cli).cliPath != null;
                 Application.Instance?.AsyncInvoke(() =>
                 {
                     if (!_tabs.TryGetValue(tab.AgentId, out var cur) || !ReferenceEquals(cur, tab)) return;
@@ -509,7 +509,7 @@ namespace CoRhino.Panel
             if (tab.CliSetupPhase == null) return;
             System.Threading.Tasks.Task.Run(() =>
             {
-                var found = CliResolver.Resolve(tab.Cli.BinaryName).cliPath != null;
+                var found = CliResolver.Resolve(tab.Cli).cliPath != null;
                 Application.Instance?.AsyncInvoke(() =>
                 {
                     if (!_tabs.TryGetValue(tab.AgentId, out var cur) || !ReferenceEquals(cur, tab)) return;
@@ -651,7 +651,7 @@ namespace CoRhino.Panel
             try
             {
                 var cli = tab.Cli;
-                var (cliPath, prefixArgs, loginPath) = CliResolver.Resolve(cli.BinaryName);
+                var (cliPath, prefixArgs, loginPath) = CliResolver.Resolve(cli);
                 var cwd = Workspace.EnsureWorkspace();
 
                 var env = new Dictionary<string, string>();
@@ -687,11 +687,12 @@ namespace CoRhino.Panel
                 }
                 else
                 {
-                    // A CLI resolved through the well-known-dir fallback
-                    // (~/.local/bin — see CliResolver) may not be on the login
-                    // PATH yet (the native installers write their PATH line to a
-                    // profile the bash -lc probe doesn't read). Prepend its dir
-                    // so the CLI's own subprocesses find it too.
+                    // A CLI resolved through the well-known fallback
+                    // (IAgentCli.WellKnownBinaryPaths — see CliResolver) may not
+                    // be on the spawn PATH yet (the native installers write
+                    // their PATH line to a shell profile / the registry user
+                    // PATH, neither visible here). Prepend its dir so the CLI's
+                    // own subprocesses find it too.
                     var binDir = Path.GetDirectoryName(cliPath);
                     if (!string.IsNullOrEmpty(binDir))
                     {
@@ -822,8 +823,8 @@ namespace CoRhino.Panel
         {
             System.Threading.Tasks.Task.Run(() =>
             {
-                var claude = CliResolver.Resolve(AgentCliRegistry.Claude.BinaryName).cliPath != null;
-                var codex = CliResolver.Resolve(AgentCliRegistry.Codex.BinaryName).cliPath != null;
+                var claude = CliResolver.Resolve(AgentCliRegistry.Claude).cliPath != null;
+                var codex = CliResolver.Resolve(AgentCliRegistry.Codex).cliPath != null;
                 Application.Instance?.AsyncInvoke(() =>
                 {
                     if (!_webReady) return;

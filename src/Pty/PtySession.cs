@@ -46,7 +46,25 @@ namespace CoRhino.Pty
 
             Log.Write("[Claude/PTY] Preparing environment (minimal allow-list)...");
             var environment = new Dictionary<string, string>();
-            var allowList = new[] { "HOME", "USER", "LOGNAME", "PATH", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR" };
+            // Identity / locale / OS plumbing only — no dev-env leakage. The
+            // list is per-OS because Porta.Pty hands this dict to the child
+            // VERBATIM (CreateProcessW / execve, no merge with the process
+            // env): none of the unix names exist on Windows, so children there
+            // used to see PATH+TERM only — which broke everything
+            // home-relative (the setup view's install.ps1 writing to
+            // $env:USERPROFILE / $env:LOCALAPPDATA, git reading ~/.gitconfig,
+            // TEMP-relative writes).
+            var allowList = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)
+                ? new[]
+                {
+                    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "USERNAME", "USERDOMAIN",
+                    "APPDATA", "LOCALAPPDATA", "ProgramData",
+                    "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432",
+                    "TEMP", "TMP", "PATH", "PATHEXT", "ComSpec",
+                    "SystemRoot", "SystemDrive", "windir",
+                    "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "OS",
+                }
+                : new[] { "HOME", "USER", "LOGNAME", "PATH", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR" };
             foreach (var key in allowList)
             {
                 var v = Environment.GetEnvironmentVariable(key);

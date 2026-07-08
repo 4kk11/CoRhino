@@ -223,9 +223,13 @@ claude --strict-mcp-config --mcp-config <~/.corhino/runtime/mcp-<port>-<agentId>
   公式ネイティブインストーラのワンライナー（`IAgentCli.NativeInstallCommand`）を表示・コピー・その場で
   実行（そのタブの PTY に出力が流れる）でき、成功すれば同じタブで CLI が起動する。シェルは
   「かわりにシェルを開く」の明示操作のみ（旧サイレントフォールバックは廃止）。
-- `CliResolver` はログインシェル解決に失敗すると `~/.local/bin/<bin>` を直接チェックする
-  （ネイティブインストーラの配置先。PATH 追記先が `.zprofile` 等で `bash -lc` から見えないため）。
-  この経路で解決した場合は spawn 環境の `PATH` に該当ディレクトリを前置する。
+- `CliResolver` は PATH 解決に失敗すると各アダプタの `IAgentCli.WellKnownBinaryPaths`
+  （公式インストーラの既知の配置先）を直接チェックする。claude: `~/.local/bin`（全 OS）、
+  codex: `~/.local/bin`（unix）/ `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin` + `%USERPROFILE%\.local\bin`（Windows）。
+  **なぜ**: インストーラの PATH 追記先はシェルプロファイル（unix）またはレジストリのユーザー PATH（Windows）で、
+  どちらも起動中の Rhino プロセスからは見えない — この直チェックがないと、セットアップビューでインストールが
+  成功しても再プローブが「missing」のままになる。この経路で解決した場合は spawn 環境の `PATH` に
+  該当ディレクトリを前置する。
 - Windows で `claudePath` が `.exe` でない（`.cmd`/`.bat` 等）場合は `cmd.exe /c <path> <args>` で起動。
 
 #### 出力バッファリング
@@ -340,9 +344,17 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
 **使い捨て**（一度終了したら再 `StartAsync` せず、新インスタンスを作る）。
 
 - `StartAsync`（[:24](../src/Pty/PtySession.cs#L24)）: 既に起動済みなら例外（再利用禁止＝使い捨ての契約）。
-  - **環境は allow-list 方式**（[:31](../src/Pty/PtySession.cs#L31)）: `HOME USER LOGNAME PATH SHELL LANG LC_ALL LC_CTYPE TMPDIR` だけを
-    親から引き継ぎ、呼び出し側 `env`（PATH 上書き等）をマージ、`TERM` 既定 `xterm-256color`。Rhino の汚れた環境を
-    claude に丸ごと渡さない。
+  - **環境は allow-list 方式**（[:31](../src/Pty/PtySession.cs#L31)）: OS 別のリストだけを親から引き継ぎ、
+    呼び出し側 `env`（PATH 上書き等）をマージ、`TERM` 既定 `xterm-256color`。Rhino の汚れた環境を
+    子に丸ごと渡さない。
+    - unix: `HOME USER LOGNAME PATH SHELL LANG LC_ALL LC_CTYPE TMPDIR`
+    - Windows: `USERPROFILE HOMEDRIVE HOMEPATH USERNAME USERDOMAIN APPDATA LOCALAPPDATA ProgramData
+      ProgramFiles ProgramFiles(x86) ProgramW6432 TEMP TMP PATH PATHEXT ComSpec SystemRoot SystemDrive
+      windir PROCESSOR_ARCHITECTURE NUMBER_OF_PROCESSORS OS`
+    - **なぜ OS 別か**: Porta.Pty はこの dict を**マージなしでそのまま**子に渡す（CreateProcessW / execve）。
+      unix 名は Windows に存在しないため、以前の Windows spawn は実質 `PATH`+`TERM` のみになり、
+      home 相対の処理すべて（セットアップビューの install.ps1 が書く `$env:USERPROFILE` /
+      `$env:LOCALAPPDATA`、git の `~/.gitconfig`、`TEMP` への書き込み）が壊れていた（design-history B12）。
   - `PtyProvider.SpawnAsync` → `IPtyConnection`。`ProcessExited` を購読し `HandleExit`（[:57](../src/Pty/PtySession.cs#L57)）。
   - `ReadLoop`（[:69](../src/Pty/PtySession.cs#L69)）: 4096 バイトずつ読み `DataReceived` を発火。**EOF も終了シグナルとして扱う**
     （ホストによっては `ProcessExited` が来ないため）。
@@ -793,7 +805,7 @@ runscript からポートを渡せず「不明なコマンド: <port>」が漏�
 |---|---|---|
 | `CORHINO_WEBUI_URL` | CoRhino が読む | セットすると WebView が dev サーバ URL を読む（UI 開発用）。未設定なら `web/index.html` |
 | `RHINO_MCP_AUTOSTART_PORT` | CoRhino が**書く** | RhinoMCP ホストの待受ポートを指定（`_-MCPSpawn` が読む）。plugin の doc-open autostart も抑止 |
-| `PATH` ほか allow-list | CoRhino が claude へ渡す | `HOME USER LOGNAME PATH SHELL LANG LC_ALL LC_CTYPE TMPDIR` + `TERM` のみ |
+| `PATH` ほか allow-list | CoRhino が子プロセスへ渡す | OS 別の標準変数のみ + `TERM`（§2.6 の allow-list 参照。Windows は `USERPROFILE`/`LOCALAPPDATA`/`SystemRoot` 等を含む） |
 
 **パス**
 

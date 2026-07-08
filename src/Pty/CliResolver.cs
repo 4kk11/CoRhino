@@ -5,16 +5,17 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
+using CoRhino.Cli;
 
 namespace CoRhino.Pty
 {
     /// <summary>
-    /// Resolves an agent CLI binary ("claude", "codex", …) to something
-    /// spawnable, plus the login shell's PATH. Resolved fresh on every call —
-    /// spawns always see the current PATH state (a CLI installed or moved while
-    /// Rhino runs is picked up by the next spawn). Callers needing repeated
-    /// availability info (the tab-bar's CLI menu) probe once on a background
-    /// thread and hold the result themselves.
+    /// Resolves an agent CLI to something spawnable, plus the login shell's
+    /// PATH. Resolved fresh on every call — spawns always see the current PATH
+    /// state (a CLI installed or moved while Rhino runs is picked up by the
+    /// next spawn). Callers needing repeated availability info (the tab-bar's
+    /// CLI menu) probe once on a background thread and hold the result
+    /// themselves.
     ///
     /// The result is an app path PLUS prefix args, not just a path: on Windows
     /// an npm .cmd shim may resolve to `node.exe &lt;pkg&gt;/bin/tool.js`, which no
@@ -23,42 +24,32 @@ namespace CoRhino.Pty
     /// </summary>
     internal static class CliResolver
     {
-        public static (string? cliPath, string[] prefixArgs, string? loginPath) Resolve(string binaryName)
+        public static (string? cliPath, string[] prefixArgs, string? loginPath) Resolve(IAgentCli cli)
         {
             return RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-                ? ResolveWindows(binaryName)
-                : ResolveUnix(binaryName);
+                ? ResolveWindows(cli)
+                : ResolveUnix(cli);
         }
 
-        static (string?, string[], string?) ResolveUnix(string binaryName)
+        static (string?, string[], string?) ResolveUnix(IAgentCli cli)
         {
-            string? cliPath = RunLoginShell($"command -v {binaryName} || which {binaryName}");
+            string? cliPath = RunLoginShell($"command -v {cli.BinaryName} || which {cli.BinaryName}");
             string? loginPath = RunLoginShell("echo -n \"$PATH\"");
-            // The official native installers (claude.ai/install.sh,
-            // chatgpt.com/codex/install.sh) drop the binary into ~/.local/bin but
-            // write their PATH line to the USER's shell profile — .zprofile/.zshrc
-            // on the default macOS zsh — which the bash -lc probe above never
-            // reads. Without this direct check a just-completed native install
-            // (the setup view's whole point) would still probe as missing.
-            cliPath ??= WellKnownBinary(binaryName);
+            // The official native installers drop the binary into a well-known
+            // dir (~/.local/bin) but write their PATH line to the USER's shell
+            // profile — .zprofile/.zshrc on the default macOS zsh — which the
+            // bash -lc probe above never reads. Without the adapter's well-known
+            // probe a just-completed native install (the setup view's whole
+            // point) would still resolve as missing.
+            cliPath ??= cli.WellKnownBinaryPaths.FirstOrDefault(File.Exists);
             return (cliPath, Array.Empty<string>(), loginPath);
         }
 
-        // ~/.local/bin/<name> — where both CLIs' native installers put the binary.
-        static string? WellKnownBinary(string binaryName)
-        {
-            var candidate = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".local", "bin",
-                RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? binaryName + ".exe" : binaryName);
-            return File.Exists(candidate) ? candidate : null;
-        }
-
-        static (string?, string[], string?) ResolveWindows(string binaryName)
+        static (string?, string[], string?) ResolveWindows(IAgentCli cli)
         {
             string? cliPath = null;
             var prefixArgs = Array.Empty<string>();
-            var lines = WhereExe(binaryName);
+            var lines = WhereExe(cli.BinaryName);
 
             // Prefer paths that CreateProcess can launch directly (.exe).
             // Then .cmd/.bat (must be wrapped via cmd.exe by the caller).
@@ -82,10 +73,11 @@ namespace CoRhino.Pty
                 if (direct != null) (cliPath, prefixArgs) = direct.Value;
             }
 
-            // Same well-known-dir fallback as unix: the native installers use
-            // %USERPROFILE%\.local\bin on Windows, which a fresh install may not
-            // have on the process PATH yet.
-            cliPath ??= WellKnownBinary(binaryName);
+            // Same well-known fallback as unix, and MORE load-bearing here: the
+            // Windows installers register their bin dir on the REGISTRY user
+            // PATH, which this already-running process never sees — where.exe
+            // above stays blind to a fresh install until Rhino restarts.
+            cliPath ??= cli.WellKnownBinaryPaths.FirstOrDefault(File.Exists);
 
             var loginPath = Environment.GetEnvironmentVariable("PATH");
             return (cliPath, prefixArgs, loginPath);

@@ -800,3 +800,38 @@ exec モードで確認。引数の引用符は Porta.Pty の Windows 引数整�
 **残課題（コードでなく環境）**: `codex delete` サブコマンドは 0.132.0 に存在しない
 （0.142.x で追加）。設計のスパイク検証は 0.142.5 — 古い codex ではドロワーからの削除が
 graceful に失敗する（行が残るだけ）。`codex update` / `npm i -g @openai/codex@latest` で解消。
+
+## B12: Windows でセットアップビューの「インストール」が機能しない — PTY 環境と再プローブの2欠陥（2026-07-08）
+
+D19 のセットアップビューは mac で実装・検証されたが、Windows 監査（静的解析 +
+Porta.Pty 逆コンパイル + 両 install.ps1 の実読）で「インストール」ボタンの経路に 2 つの
+欠陥が見つかった。配線（検出 → オーバーレイ → 再チェック → シェル）自体は OS 非依存で無事。
+
+**欠陥 1: PTY の allow-list が unix 変数のみで、Windows の子プロセスは実質 `PATH`+`TERM` だけ**
+
+- Porta.Pty の Windows 実装は `PtyOptions.Environment` を**マージせずそのまま** `CreateProcessW`
+  に渡す（逆コンパイルで確認）。allow-list（`HOME USER LOGNAME …`）は全部 unix 名なので、
+  Windows の子は `PATH`+`TERM` のみになる（実ログ `env keys: PATH,TERM` で確認）
+- claude / codex 本体はこの最小環境でも動く（実機確認）が、インストーラは死ぬ:
+  claude の install.ps1 は `$env:USERPROFILE`（DOWNLOAD_DIR）、codex の install.ps1 は
+  `$env:LOCALAPPDATA`（配置先）に依存 — 空だとカレントドライブ直下への書き込みや
+  `Join-Path` エラーになる
+- 修正: allow-list を OS 別化し、Windows は標準システム変数
+  （`USERPROFILE LOCALAPPDATA APPDATA TEMP SystemRoot ComSpec PATHEXT …`）を通す。
+  セッション内サブプロセス（git の `~/.gitconfig` 等）の挙動も正常化する副次効果
+
+**欠陥 2: codex の再プローブが Windows の公式配置先を見ない**
+
+- codex の install.ps1 は `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`（バージョンストアへの
+  junction）に配置し、PATH は**レジストリのユーザー PATH にのみ**追記する。起動中の Rhino の
+  プロセス PATH は変わらないので `where.exe` は永遠に外れ、旧 well-known フォールバックは
+  `~/.local/bin` しか見なかった → **インストール成功でも「failed」バナー、Rhino 再起動まで直らない**
+- claude は配置先が `%USERPROFILE%\.local\bin` で旧フォールバックが偶然拾っていた（B11 の
+  「claude だけ偶然無事」と同型 — 検証が claude に偏ると Windows の codex 経路が抜ける）
+- 修正: well-known 配置先を CLI 固有知識として `IAgentCli.WellKnownBinaryPaths` に移し、
+  `CliResolver.Resolve` はアダプタを受け取ってその候補を順にプローブする。
+  plans/cli-onboarding-design.md の「codex も ~/.local/bin」という前提は Windows では誤りだった
+
+**未検証のまま残る点**: powershell.exe + `irm` が新 allow-list 環境で完走するかは Windows
+実機のセットアップビュー経由で要確認（CLI をアンインストールしないと再現できないため、
+次に未導入マシンを触る機会に検証する）。

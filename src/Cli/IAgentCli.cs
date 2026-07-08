@@ -54,6 +54,17 @@ namespace CoRhino.Cli
         string NativeInstallCommand { get; }
 
         /// <summary>
+        /// Absolute paths where this CLI's official installer puts the binary,
+        /// probed in order when PATH resolution fails. This is what lets the
+        /// setup view's install button work end-to-end: the installers register
+        /// their bin dir on the login-shell profile (unix) or the REGISTRY user
+        /// PATH (windows) — neither of which a running Rhino process ever sees —
+        /// so without these probes a just-completed install would still resolve
+        /// as missing.
+        /// </summary>
+        IReadOnlyList<string> WellKnownBinaryPaths { get; }
+
+        /// <summary>
         /// The tab's layer token for a given session identity. Claude derives it
         /// deterministically from the session id (null in → null out). Codex:
         /// null mints a FRESH token (the id doesn't exist yet at spawn; call

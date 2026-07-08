@@ -30,11 +30,31 @@ namespace CoRhino.Cli
         public string DisplayName => "Codex";
         public string BinaryName => "codex";
         // OpenAI's official standalone installer (first-listed in the codex
-        // README, ahead of brew/npm). Lands in ~/.local/bin.
+        // README, ahead of brew/npm). install.sh lands in ~/.local/bin;
+        // install.ps1 lands in %LOCALAPPDATA%\Programs\OpenAI\Codex\bin.
         public string NativeInstallCommand =>
             System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)
                 ? "irm https://chatgpt.com/codex/install.ps1 | iex"
                 : "curl -fsSL https://chatgpt.com/codex/install.sh | sh";
+        public IReadOnlyList<string> WellKnownBinaryPaths =>
+            System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)
+                ? new[]
+                {
+                    // install.ps1's default target (a junction onto its versioned
+                    // store); it registers this dir on the REGISTRY user PATH only.
+                    Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "Programs", "OpenAI", "Codex", "bin", "codex.exe"),
+                    Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                        ".local", "bin", "codex.exe"),
+                }
+                : new[]
+                {
+                    Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                        ".local", "bin", "codex"),
+                };
         // Skills reach codex through the workspace symlinks (see
         // Workspace.EnsureCodexSkillsLinks): user store on .agents/skills,
         // bundled cc-plugin on .codex/skills — the same files claude loads via

@@ -96,7 +96,7 @@ namespace CoRhino.Panel
         /// </summary>
         public static bool Delete(string sessionId)
         {
-            var (codexPath, prefixArgs, _) = CliResolver.Resolve(AgentCliRegistry.Codex.BinaryName);
+            var (codexPath, prefixArgs, _) = CliResolver.Resolve(AgentCliRegistry.Codex);
             if (codexPath == null)
             {
                 Log.Write($"[CoRhino] codex delete skipped: codex CLI not found on PATH.");
