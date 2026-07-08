@@ -770,3 +770,33 @@ spawn トレース・env keys・セッションスキャン等の診断ノイズ
   live ガード×2、delete 中 resume レース）
 - codex 側の挙動は「公式 docs / ソース」と「ローカル実機」の両面で裏取りしてから設計に反映
   （例: `.codex/skills` ルートは docs の trust 条件記述と実測が食い違い、実測を採った）
+
+## B11: Windows で codex タブが開いた瞬間に閉じる — .cmd shim 解決が node.exe を実体と誤認（2026-07-08）
+
+**症状**: Windows で codex タブを開くと PTY が即 exit（code 9）してタブが消える。
+`codex delete` 経由のセッション削除も同根で失敗。mac では問題なし。
+
+**原因**: 旧 `ResolveCmdShimTarget` は「shim 内で最初に引用される `.exe` = 実体」とみなしていたが、
+npm 標準の node-script 形 shim（codex.cmd）で最初に引用される `.exe` は
+`IF EXIST "%dp0%\node.exe"` の **node.exe**。fnm 環境では shim と同じディレクトリに node.exe が
+実在するため `File.Exists` も通り、パネルは「codex の引数を渡した bare な node.exe」を spawn
+していた（node が未知の引数で即終了 → exit 9）。claude.cmd は `claude.exe` を直接引用する
+direct-exe 形だったため偶然無事だった — つまり旧ロジックは claude の shim 形状にしか正しくなかった。
+
+**修正**: `ResolveCmdShim` に形状判別を実装（`CliResolver.cs`）。
+- direct-exe 形: **node.exe 以外の**最初の引用 `.exe` を実体として直接起動
+- node-script 形: 引用された `.js` を検出し、**`node.exe` + script を prefix arg** に解決。
+  `Resolve` の戻り値を `(cliPath, prefixArgs, loginPath)` に拡張し、spawn 側
+  （`StartSession` / `CodexSessionsCatalog.Delete`）が CLI 引数の前に prefixArgs を挿む
+- どちらにも解決できない shim は従来どおり `cmd.exe /c` フォールバック
+
+**検証（Windows 実機・fnm + npm i -g @openai/codex = 0.132.0）**:
+`node.exe codex.js` + BuildArgs 同等の全引数（`-a never -s workspace-write --disable plugins`、
+`-c mcp_servers.rhino={...}`（http_headers / default_tools_approval_mode 含む）、
+`-c projects.….trust_level`、`-c developer_instructions=…`）で codex が正常起動・応答することを
+exec モードで確認。引数の引用符は Porta.Pty の Windows 引数整形（各引数をクォートし `"`→`""`）で
+無傷に通る（デコンパイルで確認）。
+
+**残課題（コードでなく環境）**: `codex delete` サブコマンドは 0.132.0 に存在しない
+（0.142.x で追加）。設計のスパイク検証は 0.142.5 — 古い codex ではドロワーからの削除が
+graceful に失敗する（行が残るだけ）。`codex update` / `npm i -g @openai/codex@latest` で解消。

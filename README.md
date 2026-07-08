@@ -82,6 +82,8 @@ Rhino プロセス
 - （任意）**[Codex CLI](https://developers.openai.com/codex/cli)** (`codex`) — あれば ＋メニューから
   codex タブを起動できる。無ければメニューでグレーアウトされるだけで claude 側に影響はない
   （codex のセットアップビューは `curl -fsSL https://chatgpt.com/codex/install.sh | sh` を案内する）
+  - **0.142 以降を推奨**: Sessions Drawer からの削除は `codex delete`（0.142 で追加）に依存する。
+    古い codex ではタブ起動・resume は動くが、削除だけが graceful に失敗する（`codex update` で解消）
 - **Rhino-MCP-Platform**（yak パッケージ）
   - 未導入ならパネルが検出し、同意ダイアログ → `yak install` → 再起動案内まで自動で行う
 

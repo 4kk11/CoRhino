@@ -651,7 +651,7 @@ namespace CoRhino.Panel
             try
             {
                 var cli = tab.Cli;
-                var (cliPath, loginPath) = CliResolver.Resolve(cli.BinaryName);
+                var (cliPath, prefixArgs, loginPath) = CliResolver.Resolve(cli.BinaryName);
                 var cwd = Workspace.EnsureWorkspace();
 
                 var env = new Dictionary<string, string>();
@@ -665,7 +665,9 @@ namespace CoRhino.Panel
                     tab.SessionId, tab.Resume,
                     tab.LayerToken,
                     DateTime.UtcNow);
-                var args = cli.BuildArgs(ctx);
+                // A .cmd shim may have resolved to `node.exe <script.js>` —
+                // the script rides in front of the CLI's own args.
+                var args = prefixArgs.Concat(cli.BuildArgs(ctx)).ToArray();
 
                 var isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
                 if (string.IsNullOrEmpty(cliPath))
@@ -712,7 +714,7 @@ namespace CoRhino.Panel
                         await CodexSpawnGate.WaitAsync().ConfigureAwait(false);
                     try
                     {
-                        Log.Write($"[CoRhino] Spawning {cliPath} in {cwd}");
+                        Log.Write($"[CoRhino] Spawning {cliPath}{(prefixArgs.Length > 0 ? " " + string.Join(" ", prefixArgs) : "")} in {cwd}");
                         if (isWindows && !cliPath!.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
                         {
                             // Only .exe can be launched directly by CreateProcess on Windows.

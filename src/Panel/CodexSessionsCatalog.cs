@@ -96,7 +96,7 @@ namespace CoRhino.Panel
         /// </summary>
         public static bool Delete(string sessionId)
         {
-            var (codexPath, _) = CliResolver.Resolve(AgentCliRegistry.Codex.BinaryName);
+            var (codexPath, prefixArgs, _) = CliResolver.Resolve(AgentCliRegistry.Codex.BinaryName);
             if (codexPath == null)
             {
                 Log.Write($"[CoRhino] codex delete skipped: codex CLI not found on PATH.");
@@ -112,6 +112,7 @@ namespace CoRhino.Panel
                     UseShellExecute = false,
                     CreateNoWindow = true,
                 };
+                foreach (var a in prefixArgs) psi.ArgumentList.Add(a); // .cmd shim → node.exe <script.js>
                 psi.ArgumentList.Add("delete");
                 // --force: without it codex prompts for confirmation and dies on a
                 // non-interactive terminal. The drawer's two-step 🗑 confirm is the

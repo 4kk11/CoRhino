@@ -362,9 +362,17 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
   **ログインシェル経由**なのは、Rhino の PATH には nvm/homebrew 等のパスが入っていないことが多いから。
   binaryName はシェルコマンドに埋め込まれるため、**アダプタ定数（`IAgentCli.BinaryName`）以外を渡さない**こと。
 - Windows: `where.exe <bin>` の結果から **`.exe` を最優先**（`.cmd` → `.bat` → 先頭）。
-  - `.cmd` shim を引いたら、その中身から実体 `.exe` を正規表現で抽出して差し替える（`ResolveCmdShimTarget`）。
-  - **なぜ**: `cmd.exe` を噛ませると ConPTY の ANSI シーケンス透過が乱れ、Ink ベースの claude TUI が
-    チラつく／バナーが重複する。直接 `.exe` を起動すればこれを避けられる。
+  - `.cmd` shim を引いたら、その中身を解析して実体に差し替える（`ResolveCmdShim`）。npm 系 shim は 2 形状:
+    - **direct-exe 形**（claude）: `"%dp0%\...\claude.exe" %*` → その `.exe` を直接起動（prefix args なし）。
+    - **node-script 形**（codex）: `"%_prog%" "%dp0%\...\codex.js" %*` → `node.exe` + **script を prefix arg** に解決。
+      shim 内で最初に引用される `.exe` は `IF EXIST "%dp0%\node.exe"` の **node.exe** なので、
+      「最初の `.exe` = 実体」とみなしてはいけない（bare な node.exe に CLI 引数を渡すと即終了 →
+      Windows で codex タブが開いた瞬間閉じるバグの原因だった。design-history 参照）。
+  - このため `Resolve` の戻り値は path 単体でなく **(cliPath, prefixArgs, loginPath)**。spawn 側
+    （`StartSession` / `CodexSessionsCatalog.Delete`）は CLI 引数の前に prefixArgs を必ず挿む。
+  - **なぜ shim を解決するか**: `cmd.exe` を噛ませると ConPTY の ANSI シーケンス透過が乱れ、Ink ベースの
+    claude TUI がチラつく／バナーが重複する。また `/c` の再パースで引用符入り引数（codex の TOML `-c`）が
+    壊れる。直接 `.exe`（＋script）を起動すればどちらも避けられる。
 
 ### 2.7b CLI アダプタ層 — `src/Cli/`
 
@@ -733,8 +741,8 @@ RhinoMCP ホストは**ドキュメント単位**。`EndOpenDocument` / `NewDocu
 | 観点 | macOS | Windows |
 |---|---|---|
 | WebView ブリッジ | `window.eto.postMessage`（WKWebView） | `window.chrome.webview.postMessage`（WebView2） |
-| claude 解決 | `bash -lc "command -v claude"` | `where.exe claude`（`.exe` 優先、`.cmd` は実体 `.exe` に解決） |
-| claude 起動 | 直接 spawn | `.exe` は直接、それ以外は `cmd.exe /c` 経由 |
+| CLI 解決 | `bash -lc "command -v <bin>"` | `where.exe <bin>`（`.exe` 優先、`.cmd` は実体 `.exe` または `node.exe <script.js>` に解決 — §2.7） |
+| CLI 起動 | 直接 spawn | `.exe` は直接（shim 由来の prefix args を前置）、それ以外は `cmd.exe /c` 経由 |
 | CLI 未解決時のシェル（明示操作） | `bash -l` | `cmd.exe` |
 | インストーラ実行 | `bash -lc "<installer>"` | `powershell -ExecutionPolicy Bypass -Command "<installer>"` |
 | ネイティブ dylib | `lipo` で arm64+x64 ユニバーサル化 | win-x64 native をコピー |
