@@ -9,7 +9,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <EnableDynamicLoading>true</EnableDynamicLoading>
-    <Version>0.0.1</Version>
+    <Version>0.1.0-beta.1</Version>
     <!-- Pins the yak distribution-tag floor (minimum supported Rhino). yak stamps
          the tag from the RhinoCommon version the .rhp is compiled against, so we
          reference the NuGet package at a fixed version instead of the locally
