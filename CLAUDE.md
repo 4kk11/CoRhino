@@ -20,8 +20,11 @@ PTY で `claude` を起動し、公式 Rhino-MCP-Platform のホストに direct
 
 ## コマンド
 
-- Build（UI ビルド統合済み・これ一発で完結）: `dotnet build src/CoRhino.csproj`
-- UI 単体開発: `cd ui && npm run dev`（`CORHINO_WEBUI_URL=http://localhost:5173` をセットして Rhino 起動）
+主要コマンドは `Makefile` に集約（`make help` で一覧）。
+
+- Build（UI ビルド統合済み・これ一発で完結）: `make build`（= `dotnet build src/CoRhino.csproj`）
+- UI 単体開発: `make ui-dev`（`CORHINO_WEBUI_URL=http://localhost:5173` をセットして Rhino 起動）
+- yak パッケージ: `make pack` → `make yak-push`（配布の詳細は README「配布」節）
 
 ## 設計境界（崩さない）
 

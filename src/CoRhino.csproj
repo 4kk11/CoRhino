@@ -10,6 +10,16 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <Version>0.0.1</Version>
+    <!-- Pins the yak distribution-tag floor (minimum supported Rhino). yak stamps
+         the tag from the RhinoCommon version the .rhp is compiled against, so we
+         reference the NuGet package at a fixed version instead of the locally
+         installed RhinoCommon.dll — this keeps the floor INTENTIONAL and stable,
+         decoupled from whatever Rhino the dev machine happens to have installed.
+         NuGet ships CoreCLR (net7.0) assets only from 8.19 onward (8.18 and
+         earlier are net48-only and won't restore for a net8.0 build), so that is
+         the lowest pinnable floor. We deliberately target the latest instead.
+         Lower this only to widen support to older Rhino 8 service releases. -->
+    <RhinoCommonVersion>8.32.26160.13001</RhinoCommonVersion>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(OS)' == 'Unix'">
@@ -23,10 +33,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Reference Include="RhinoCommon">
-      <HintPath>$(RhinoResources)/RhinoCommon.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
+    <!-- Reference-only (ExcludeAssets=runtime): Rhino provides RhinoCommon at
+         runtime, so it must NOT be copied to the output — same effect as the old
+         HintPath's Private=false, but the version (= yak floor) is now pinned.
+         Eto/Rhino.UI stay on the local install: they don't affect the yak tag,
+         and the WebView APIs used here are long-standing Eto surface. -->
+    <PackageReference Include="RhinoCommon" Version="$(RhinoCommonVersion)" ExcludeAssets="runtime" />
     <Reference Include="Eto">
       <HintPath>$(RhinoResources)/Eto.dll</HintPath>
       <Private>false</Private>

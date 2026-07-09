@@ -178,6 +178,9 @@ src/                        C# Rhino プラグイン
 cc-plugin/                  同梱 Claude Code プラグイン（save-rhino-skill / orchestrate-agents）
 ui/                         パネル UI（TypeScript + xterm.js, vite）
 docs/                       設計・アーキテクチャ・ロードマップ（下記）
+yak/                        Rhino パッケージマネージャ用 manifest.yml + icon.png
+build-yak.sh                yak パッケージ（.yak）を組み立てるスクリプト（下記「配布」）
+Makefile                    主要コマンドの集約（make help で一覧）
 ```
 
 ## ドキュメント
@@ -193,12 +196,52 @@ docs/                       設計・アーキテクチャ・ロードマップ�
 
 ## 開発
 
+主要コマンドは `Makefile` に集約している（`make` または `make help` で一覧）。
+
+| target | 内容 |
+|---|---|
+| `make build` / `make release` | Debug / Release ビルド（UI ビルド + native flatten + plugin dir へインストールまで込み） |
+| `make ui-dev` / `make ui-build` | vite dev サーバ / UI 単体ビルド |
+| `make pack` | Release ビルド + yak パッケージ生成（`dist/yak/`）。`make pack VERSION=0.1.0` で版指定 |
+| `make yak-login` / `make yak-push-test` / `make yak-push` | yak 認証 / テスト・本番サーバへ push |
+| `make clean` / `make uninstall` | ビルド成果物削除 / インストール済みプラグイン削除 |
+
 UI を vite dev サーバから読ませる場合は、Rhino 起動前に環境変数を設定する:
 
 ```bash
-export CORHINO_WEBUI_URL=http://localhost:5173   # ui/ で `npm run dev` 中
+export CORHINO_WEBUI_URL=http://localhost:5173   # `make ui-dev` 実行中
 ```
 
 設定時はパネルがディスク上の `web/index.html` ではなく dev サーバの URL を読む。
 
 各ドキュメントの詳細は上記「ドキュメント」を参照。
+
+## 配布（Rhino パッケージマネージャ / yak）
+
+Rhino の Package Manager（`_PackageManager` / Tools ▸ Package Manager）からインストールできる
+`.yak` パッケージを作る。ビルド出力（`.rhp` + 依存一式）をそのまま同梱するので、ローカルの
+実動インストールと同じファイル集合になる。
+
+```bash
+make pack                 # Release ビルド → dist/yak/corhino-<ver>-rh8_32-<os>.yak
+make pack VERSION=0.1.0   # パッケージバージョンを明示指定
+```
+
+（`make pack` は `build-yak.sh` を呼ぶだけ。スクリプトを直接叩いても同じ。）
+
+- パッケージは **OS ごとに作る**（native pty ライブラリが OS 依存）。mac 用は macOS で、
+  win 用は Windows（Git Bash / WSL）でそれぞれ `build-yak.sh` を実行する。
+- 生成物は `dist/yak/`（gitignore 対象）。manifest / icon は `yak/` にある。
+- 公開は `make yak-login` → `make yak-push-test`（テスト）→ `make yak-push`（本番）。
+
+### 対応 Rhino 最小バージョン（配布タグ）
+
+yak は `.rhp` が参照する **RhinoCommon のバージョン**を配布タグ（例 `rh8_32` = Rhino 8.32 以上）
+として刻む。開発機にインストールされた Rhino のバージョンに追従してフロアが勝手に変わらないよう、
+`src/CoRhino.csproj` の `RhinoCommonVersion` で **NuGet の RhinoCommon を固定参照**している
+（`ExcludeAssets="runtime"` = 参照専用。実体は Rhino が実行時に供給する）。
+
+- 現在のフロア: **rh8_32**（`8.32.26160.13001`、最新）。
+- 固定できる下限は **rh8_19**（`8.19.25132.1001`）。RhinoCommon NuGet が CoreCLR（net7.0）
+  アセンブリを同梱するのは 8.19 以降で、8.18 以前は net48 のみ＝net8.0 ビルドで復元できない。
+- 古い Rhino 8 まで対応を広げたいときは `RhinoCommonVersion` を下げる（下限 8.19）。

@@ -1,0 +1,21 @@
+---
+name: corhino
+# $version is inferred from CoRhino.rhp's assembly version (<Version> in src/CoRhino.csproj)
+# during `yak build`, so the csproj stays the single source of truth.
+version: $version
+authors:
+  - 4kk11
+description: >
+  Dock an AI coding agent (Claude Code / Codex CLI) into Rhino 8. A persistent
+  side panel lets the agent operate the Rhino instance you have open. Rhino
+  operations run on the official Rhino-MCP-Platform; CoRhino provides the panel
+  UX, launch wiring, and onboarding only.
+url: "https://github.com/4kk11/CoRhino"
+icon: icon.png
+keywords:
+  - ai
+  - claude
+  - codex
+  - agent
+  - mcp
+  - automation
