@@ -54,6 +54,12 @@ sequenceDiagram
      同時に textarea の `input`/`beforeinput` を握り潰し、二重入力（"rrhhiinnoo"）を防ぐ。IME 合成中は素通し。
      フォーカスは常にアクティブタブのみなので、リスナーは `activeTab` を都度解決する。
    - Windows/WebView2 は xterm 既定経路（textarea → onData）。
+   - **Shift+Enter の横取り**: xterm の既定キー処理は Enter を修飾キー無視で `\r` に変換するため、
+     `createTerminal()`（[main.ts](../../ui/src/main.ts)）で `term.attachCustomKeyEventHandler()` により
+     Shift+Enter の keydown だけを捕まえ `term.input('\n', true)` を注入する（＝ Ctrl+J と同じ LF バイト。
+     claude / codex はこれを「改行挿入」として扱う）。これも `term.input()` 経由なので入口は同じ
+     `onData` のまま。ブラウザ既定の textarea 改行挿入と xterm 自身の `\r` 送出は
+     `e.preventDefault()` + ハンドラの `false` 返却で二重に止める（詳細は design-history B18）。
 
 2. **ブリッジ選択 `post()`** — 環境ごとに送信口が違うのを吸収（[main.ts:22-45](../../ui/src/main.ts#L22)）。
    `JSON.stringify({type:'stdin', data})` した文字列を、

@@ -461,6 +461,22 @@ ${isWindowsWebView2 ? `
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
+    // xterm's built-in key handling has no modifier-aware Enter: Shift+Enter sends the
+    // same \r as plain Enter, so it submits instead of inserting a line break — claude
+    // and codex can't tell the two apart. Intercept it and feed \n through term.input()
+    // (the same onData entry point the macOS keystroke workaround below uses) instead;
+    // both CLIs already treat a bare LF (the byte Ctrl+J sends) as "insert newline", so
+    // this reuses that existing behavior rather than inventing a new protocol.
+    // preventDefault stops the browser's native textarea Enter-insertion (there's no
+    // safety net for it on Windows the way swallowInput below covers macOS); returning
+    // false stops xterm's own handler from also emitting \r for the same keydown.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown' || e.key !== 'Enter' || !e.shiftKey) return true
+      if (e.ctrlKey || e.metaKey || e.altKey || composing || e.isComposing) return true
+      e.preventDefault()
+      term.input('\n', true)
+      return false
+    })
     return { term, fit }
   }
 

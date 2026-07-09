@@ -1021,3 +1021,28 @@ codex の置き去りカーソルに敗北 → 合成単位凍結（B17、最終
 （静かな状態は無印 — タブバーのノイズも減る）。グリフ語彙は `statusGlyph()`（sessions-drawer.ts、
 ドロワーとタブバーで共用）、見た目は `.statusglyph` CSS（main.ts）。検討した代替は
 タブ下線バー（ブラウザ風）とバッジ加工（リング/グロー）— ユーザー選択でグリフ切替に決定。
+
+## B18: Shift+Enter が改行ではなく送信になる — xterm の Enter に修飾キー区別がない（2026-07-09）
+
+**症状**: パネル内の claude / codex タブで Shift+Enter を押しても改行されず、そのまま
+メッセージが送信される。macOS のスタンドアロン端末（iTerm2 等）ではよくある問題だが、
+CoRhino は自前の WebView 内 xterm.js なので端末側の制約とは無関係——原因は自分のコード側にある。
+
+**原因**: xterm.js の既定キー処理は Enter を修飾キー無視で `\r` に変換する（Shift 有無を
+区別しない）。`onData` が唯一の入口（[io-flow-xterm-pty.md](details/io-flow-xterm-pty.md)）で、
+そこに至るまでのどこにも Shift+Enter 専用の分岐がなかった。既存の macOS 早取りワークアラウンド
+（`main.ts` の capture-phase `keydown`）は印字可能キー（`key.length === 1`）だけを対象にしており
+`"Enter"` は対象外なので無関係。
+
+**対応**: `createTerminal()` で `term.attachCustomKeyEventHandler()` を使い、Shift+Enter の
+keydown だけを横取りして `term.input('\n', true)` を呼ぶ（他のキーは既定処理へ通す）。
+`\n`（Ctrl+J と同じ LF バイト）を選んだ理由は、claude・codex どちらも既にこのバイトを
+「改行挿入」として扱っているため——新しいプロトコルを発明せず既存の挙動に乗せた。
+`term.input()` を使うのは、既存の macOS ワークアラウンドと同じ経路（`onData` 一本化）を保つため。
+IME 変換確定用の Enter は `composing` / `e.isComposing` で除外し壊さない。
+`e.preventDefault()` を明示しているのは、`attachCustomKeyEventHandler` が `false` を返しても
+xterm 自身が代わりに `preventDefault` してくれるわけではなく、ブラウザ既定の textarea 改行挿入が
+素通りすると `input` イベント経由で二重送信し得るため（macOS には `swallowInput` の安全網があるが
+Windows/WebView2 は既定経路のままなのでここで確実に止める必要がある）。
+
+**検証**: `tsc --noEmit` / `dotnet build` とも 0 エラー。実機（mac/Windows）確認は未。
