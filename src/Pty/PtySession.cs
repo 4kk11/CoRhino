@@ -47,13 +47,16 @@ namespace CoRhino.Pty
             Log.Write("[Claude/PTY] Preparing environment (minimal allow-list)...");
             var environment = new Dictionary<string, string>();
             // Identity / locale / OS plumbing only — no dev-env leakage. The
-            // list is per-OS because Porta.Pty hands this dict to the child
-            // VERBATIM (CreateProcessW / execve, no merge with the process
-            // env): none of the unix names exist on Windows, so children there
-            // used to see PATH+TERM only — which broke everything
-            // home-relative (the setup view's install.ps1 writing to
-            // $env:USERPROFILE / $env:LOCALAPPDATA, git reading ~/.gitconfig,
-            // TEMP-relative writes).
+            // list is per-OS because on WINDOWS Porta.Pty hands this dict to
+            // the child VERBATIM (CreateProcessW with an explicit block, no
+            // merge): none of the unix names exist there, so children used to
+            // see PATH+TERM only — which broke everything home-relative (the
+            // setup view's install.ps1 writing to $env:USERPROFILE /
+            // $env:LOCALAPPDATA, git reading ~/.gitconfig, TEMP-relative
+            // writes). On UNIX the native layer is fork+setenv+execvp and the
+            // child inherits the full parent env regardless — there the list
+            // is aspirational and the poison-var scrub below (B19) does the
+            // actual isolating that matters.
             var allowList = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)
                 ? new[]
                 {
@@ -73,6 +76,26 @@ namespace CoRhino.Pty
             if (env != null)
                 foreach (var kv in env) environment[kv.Key] = kv.Value;
             environment["TERM"] = environment.TryGetValue("TERM", out var t) ? t : "xterm-256color";
+            // CAVEAT (B19): "verbatim" is only true on WINDOWS (CreateProcessW
+            // with an explicit block). Porta.Pty's unix native layer is
+            // fork + setenv-per-entry + execvp — the child INHERITS the full
+            // parent (Rhino) environment and this dict is merely laid on top,
+            // so the allow-list does NOT isolate here. Rather than chase every
+            // inherited var, explicitly neutralize the ones that BREAK child
+            // tooling: Rhino homes its embedded Python 3.9 via
+            // PYTHONHOME=~/.rhinocode/py39-rh8, which makes every other
+            // python3 on the machine die before main() ("No module named
+            // 'encodings'"). An EMPTY value is the library's own unsetenv
+            // convention (see its TMUX/COLUMNS base entries) — and even if it
+            // degraded to setenv(""), CPython ignores empty PYTHON* values.
+            // Rhino's own process env is untouched; run_python keeps working.
+            if (!System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows))
+            {
+                foreach (var poison in new[] { "PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE" })
+                {
+                    if (!environment.ContainsKey(poison)) environment[poison] = string.Empty;
+                }
+            }
             Log.Write($"[Claude/PTY] env keys: {string.Join(",", environment.Keys)}");
 
             var options = new PtyOptions
