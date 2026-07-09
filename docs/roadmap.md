@@ -52,7 +52,7 @@ WIP / pre-alpha のため、ここの項目は予告なく増減・並び替え�
     同一セッションを resume できてしまう。
   - **セッション一覧のライブ更新**: 現状は開閉・タブ増減・rename 契機のみ（watcher なし。
     他パネルの実行中解除も自パネルの次の契機まで反映されない）。
-  - **session-names.json の剪定**: 消えたセッションの孤児エントリを掃除する仕組み。
+  - **session-names.json / session-parents.json の剪定**: 消えたセッションの孤児エントリを掃除する仕組み。
 
 ## Codex CLI 対応の残り（D13–D18 の続き）
 
@@ -100,5 +100,24 @@ WIP / pre-alpha のため、ここの項目は予告なく増減・並び替え�
   防ぐ。**CoRhino 側にツールは置かない**（設計境界）。ヘッダ注入までは CoRhino 済み。実際に衝突が痛くなってから着手。
 - **エージェント間の変更通知**: MCP は req/res のみで外部変更を push しない。レイヤ分離前提では不要だが、
   跨いで参照する用途が出たら検討（ホスト→クライアントの通知 or ポーリング規約）。
-- **タブ UX の作り込み**: 用途別プリセット（builder / reviewer 等）、エージェント数の上限やポート負荷の表示。
-  タブのリネームは D10 で実装済み（手動名 > 自動タイトル > agent-N）。
+- **タブ UX の作り込み**: 用途別プリセット（builder / reviewer 等）、ポート負荷の表示。
+  タブのリネームは D10、タブ上限（MaxTabs=8）は D21 で実装済み。
+
+## エージェントオーケストレーション（D21 の続き）
+
+コマンドファイル・プロトコル（spawnTab / sendPrompt / closeTab + ready ゲート + マニフェスト +
+`orchestrate-agents` スキル）は実装済み（2026-07-09、
+→ [`plans/agent-orchestration-design.md`](plans/agent-orchestration-design.md) / D21）。
+承認バナーは D22 で撤去（親の権限ゲートと二重・防御価値ゼロ。通知のみに変更）。残り:
+
+- **実機確認（ゲート）**: フルサイクル（spawn→初期プロンプト配送→完了検知→transcript 回収→closeTab）、
+  `not-your-child` スコープ、`tab-limit-reached`、孤児の継続動作、
+  spawn 時のコマンドライン通知（緩和 permissionMode の警告表示）、SessionStart フック不発時の
+  15s フォールバック。チェックリストは
+  [`plans/agent-orchestration-tasks.md`](plans/agent-orchestration-tasks.md) Phase 8
+- **V2 候補**: codex 子タブ（セッション ID 後発見の対応付け）/ dumpScreen（PTY リングバッファ）/
+  クロスパネル操作 / オーケストレーションの opt-out・許可リスト設定（D22 で承認を撤去したため、
+  明示統制が欲しくなった場合の再導入先はブロッキング承認ではなく設定）
+- ~~PYTHONHOME 漏れの検証~~ → B19 で原因確定・修正済み（unix の Porta.Pty は継承+setenv で
+  allow-list は隔離にならない → 毒変数スクラブ）。実機確認（セッション/子タブの `python3` と
+  `run_python` の無影響）のみ残り

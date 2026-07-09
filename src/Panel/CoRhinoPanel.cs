@@ -95,6 +95,30 @@ namespace CoRhino.Panel
             // onTabStatus wire enum), driven by the status file its CLI hooks
             // write (see Workspace.AgentStatusFilePath). UI-thread-only.
             public string Status = "idle";
+            // The agent that spawned this tab via the orchestration protocol;
+            // null for user-created tabs. sendPrompt/closeTab commands may only
+            // target a requester's OWN children (design §7). UI-thread-only.
+            public string? ParentAgentId;
+            // The permission mode an orchestrating parent requested for this
+            // tab's claude (--permission-mode); null = claude's default. Set at
+            // tab creation (UI thread), read by StartSession (launch thread).
+            public string? RequestedPermissionMode;
+            // True once this tab's TUI accepts input (SessionStart hook wrote
+            // "ready", or the 15s fallback fired). Gates prompt delivery: text
+            // written into the PTY before the TUI listens is silently eaten.
+            // Written on UI + launch threads → volatile.
+            public volatile bool TuiReady;
+            // Prompts queued until TuiReady (the spawn command's initial prompt
+            // and any sendPrompt that raced the boot). UI-thread-only.
+            public readonly List<string> PendingPrompts = new();
+            // One-shot fallback for a SessionStart hook that never fires (old
+            // CLI, broken settings): flush the prompt queue anyway after 15s.
+            public System.Threading.Timer? ReadyTimeoutTimer;
+            // Single-flight guard for prompt delivery: while a background
+            // delivery loop is writing pastes into the PTY, further flushes
+            // just queue up (delivery order must never interleave).
+            // UI-thread-only.
+            public bool PromptDelivering;
         }
 
         readonly WebView _webView;
@@ -158,6 +182,16 @@ namespace CoRhino.Panel
         // reads are a few bytes, and latency IS the feature here.
         FileSystemWatcher? _statusWatcher;
 
+        // Inbound half of the orchestration protocol: watches the shared
+        // agent-commands drop-box for cmd-<ourport>-*.json requests (the status
+        // watcher's mirror image — there hooks write and we read state, here
+        // agents write and we read commands).
+        FileSystemWatcher? _commandWatcher;
+
+        // Hard cap on live tabs per panel — the second recursion guard behind
+        // the per-tab grant (design §7). Counts ALL tabs, user-created included.
+        const int MaxTabs = 8;
+
         static readonly JsonSerializerOptions JsonOptions = new()
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
@@ -204,6 +238,10 @@ namespace CoRhino.Panel
             LoadWebView();
             StartSkillsWatcher();
             StartStatusWatcher();
+            // Orchestration: drop requests a dead panel left addressed to our
+            // port (nobody will ever execute them) before we start listening.
+            AgentCommands.SweepStale(_hostPort);
+            StartCommandWatcher();
 
             // Spawn the first agent. More are added on demand when the user clicks
             // "+" in the tab bar (a 'createTab' message).
@@ -217,6 +255,7 @@ namespace CoRhino.Panel
         {
             _tabs[tab.AgentId] = tab;
             if (tab.SessionId != null) LiveSessionIds.Add(tab.SessionId);
+            WriteTabsManifest();
         }
 
         void UnregisterTab(AgentTab tab)
@@ -225,6 +264,8 @@ namespace CoRhino.Panel
             PendingCodexTabs.Remove(tab);
             Workspace.DeleteAgentStatusFile(_hostPort, tab.AgentId);
             try { tab.DiscoveryCts?.Cancel(); } catch (ObjectDisposedException) { }
+            tab.ReadyTimeoutTimer?.Dispose();
+            WriteTabsManifest();
             if (tab.SessionId == null) return;
             // A tab removed MID-LAUNCH keeps its session marked live until the
             // launch task quiesces: its claude may be mid-spawn (--resume already
@@ -237,7 +278,11 @@ namespace CoRhino.Panel
 
         // Allocate the next agent id, register its tab, announce it to the UI
         // (if ready), and start its agent CLI in the background. Returns the new tab.
-        AgentTab SpawnTab(AgentCliKind kind = AgentCliKind.Claude)
+        // The orchestration parameters (parent / initialPrompt / permissionMode /
+        // name) are only ever non-null on agent-commanded spawns; the UI's "+"
+        // and the constructor pass none of them.
+        AgentTab SpawnTab(AgentCliKind kind = AgentCliKind.Claude, string? parentAgentId = null,
+            string? initialPrompt = null, string? permissionMode = null, string? name = null)
         {
             var cli = AgentCliRegistry.For(kind);
             var agentId = $"agent-{_nextAgentNum++}";
@@ -249,6 +294,8 @@ namespace CoRhino.Panel
                 // Claude pins its id up front (--session-id); codex generates its
                 // own — discovery fills SessionId in after launch.
                 SessionId = kind == AgentCliKind.Claude ? Guid.NewGuid().ToString() : null,
+                ParentAgentId = parentAgentId,
+                RequestedPermissionMode = permissionMode,
             };
             tab.LayerToken = cli.LayerTokenFor(tab.SessionId);
             if (tab.SessionId == null)
@@ -256,12 +303,23 @@ namespace CoRhino.Panel
                 tab.DiscoveryCts = new System.Threading.CancellationTokenSource();
                 PendingCodexTabs.Add(tab);
             }
+            if (!string.IsNullOrWhiteSpace(name) && tab.SessionId != null)
+            {
+                // The parent's chosen name follows the normal rename path so it
+                // survives exactly like a user-given one.
+                SessionNames.Set(tab.SessionId, name);
+                tab.CustomName = name!.Trim();
+            }
             RegisterTab(tab);
             WireSession(tab);
 
-            Log.Write($"[CoRhino] Spawning tab {agentId} ({cli.BinaryName}, session {tab.SessionId ?? "<pending>"}, layer {tab.LayerToken}).");
+            Log.Write($"[CoRhino] Spawning tab {agentId} ({cli.BinaryName}, session {tab.SessionId ?? "<pending>"}, layer {tab.LayerToken}" +
+                (parentAgentId != null ? $", parent {parentAgentId}" : "") + ").");
             AnnounceTab(tab);
             LaunchSessionInBackground(tab);
+            // The initial prompt rides the same ready-gated queue as any later
+            // sendPrompt — one delivery path, no TUI boot race (design §5).
+            if (!string.IsNullOrEmpty(initialPrompt)) SendPromptToTab(tab, initialPrompt!);
             RequestSessionsScan(); // live flags changed
             return tab;
         }
@@ -284,6 +342,11 @@ namespace CoRhino.Panel
                 label = ComputeLabel(tab),
                 customName = tab.CustomName,
                 cli = CliId(tab),
+                // Orchestrated children appear WITHOUT stealing focus: the user
+                // is mid-conversation in the parent tab, and yanking them away
+                // on every spawn makes multi-child fan-out unusable. The status
+                // dot (busy → unseen-done) is the child's progress signal.
+                background = tab.ParentAgentId != null,
             }, JsonOptions);
             Application.Instance?.AsyncInvoke(() =>
                 _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onTabCreated({encoded})"));
@@ -668,7 +731,9 @@ namespace CoRhino.Panel
                 // Reset the status file BEFORE spawn: a relaunch reusing this
                 // port+agentId key must not inherit the previous session's last
                 // state. The write also round-trips through the status watcher,
-                // which resets the UI dot to idle.
+                // which resets the UI dot to idle. The ready gate re-arms too —
+                // a relaunched TUI must be waited for like a fresh one.
+                tab.TuiReady = false;
                 Workspace.InitAgentStatusFile(_hostPort, tab.AgentId);
 
                 var env = new Dictionary<string, string>();
@@ -681,7 +746,8 @@ namespace CoRhino.Panel
                     tab.AgentId, _hostPort, cwd,
                     tab.SessionId, tab.Resume,
                     tab.LayerToken,
-                    DateTime.UtcNow);
+                    DateTime.UtcNow,
+                    tab.RequestedPermissionMode);
                 // A .cmd shim may have resolved to `node.exe <script.js>` —
                 // the script rides in front of the CLI's own args.
                 var args = prefixArgs.Concat(cli.BuildArgs(ctx)).ToArray();
@@ -830,6 +896,7 @@ namespace CoRhino.Panel
                 _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onTabSession({encoded})");
             }
             PushTabLabel(tab);
+            WriteTabsManifest(); // the id/layer just became observable
         }
 
         // Probe which agent CLIs exist on PATH and tell the UI (the + menu greys
@@ -1156,8 +1223,9 @@ namespace CoRhino.Panel
             catch (Exception) { return; } // deleted (tab teardown) or mid-write; ignore
             // cmd's echo appends \r\n and may sneak a space in — Trim() is the
             // contract with Workspace.StatusEchoCommand. Unknown words (a torn
-            // read, a future state) are dropped rather than guessed.
-            if (status != "busy" && status != "waiting" && status != "idle") return;
+            // read, a future state) are dropped rather than guessed. "ready" is
+            // the SessionStart hook's TUI-accepts-input signal (design §5).
+            if (status != "busy" && status != "waiting" && status != "idle" && status != "ready") return;
 
             Application.Instance?.AsyncInvoke(() =>
             {
@@ -1179,6 +1247,15 @@ namespace CoRhino.Panel
         // UI thread only: the single mutation site for a tab's status.
         void ApplyAgentStatus(AgentTab tab, string status)
         {
+            if (status == "ready")
+            {
+                // Not a display state: SessionStart means the TUI is accepting
+                // input, so release anything the prompt gate parked. On screen
+                // a freshly booted session is simply idle.
+                tab.TuiReady = true;
+                FlushPromptQueue(tab);
+                status = "idle";
+            }
             if (tab.Status == status) return;
             tab.Status = status;
             PushTabStatus(tab);
@@ -1192,6 +1269,359 @@ namespace CoRhino.Panel
             var encoded = JsonSerializer.Serialize(
                 new { agentId = tab.AgentId, sessionId = tab.SessionId, status = tab.Status }, JsonOptions);
             _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onTabStatus({encoded})");
+        }
+
+        // ------------------------------------------------------------------
+        // Orchestration (design: plans/agent-orchestration-design.md)
+        // ------------------------------------------------------------------
+
+        // Watch the shared agent-commands drop-box for requests addressed to
+        // this panel's port. Same shape as the status watcher; Renamed is also
+        // subscribed because the writing contract is temp+move (a rename).
+        void StartCommandWatcher()
+        {
+            try
+            {
+                Directory.CreateDirectory(Workspace.CommandsDir);
+                _commandWatcher = new FileSystemWatcher(Workspace.CommandsDir)
+                {
+                    Filter = "cmd-*.json",
+                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName,
+                };
+                FileSystemEventHandler onChange = (_, e) => OnCommandFileEvent(e.FullPath);
+                _commandWatcher.Created += onChange;
+                _commandWatcher.Changed += onChange;
+                _commandWatcher.Renamed += (_, e) => OnCommandFileEvent(e.FullPath);
+                _commandWatcher.Error += (_, e) =>
+                    Log.Write($"[CoRhino] Command watcher error (orchestration frozen): {e.GetException()?.Message}");
+                _commandWatcher.EnableRaisingEvents = true;
+            }
+            catch (Exception ex)
+            {
+                Log.Write($"[CoRhino] Command watcher unavailable: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        // Watcher thread. One request file fires several events (Created +
+        // Changed, or a Renamed from the mover) — the claim-by-move makes
+        // processing exactly-once: whichever event wins the File.Move owns the
+        // request, every loser's Move throws and returns.
+        void OnCommandFileEvent(string fullPath)
+        {
+            var name = Path.GetFileName(fullPath);
+            if (!AgentCommands.IsCommandForPort(name, _hostPort)) return;
+            // cmd-<port>-<id>.json → <id>. Responses are keyed by the FILENAME
+            // id, and the body must claim the same one — so a request can only
+            // ever answer (or clobber) its own response file, never another's.
+            var prefix = $"cmd-{_hostPort}-";
+            var fileId = name.Substring(prefix.Length, name.Length - prefix.Length - ".json".Length);
+
+            var claimed = fullPath + ".claimed";
+            try { File.Move(fullPath, claimed); }
+            catch (Exception) { return; } // lost the claim race, or already consumed
+
+            string json;
+            try { json = AgentCommands.ReadRequest(claimed); }
+            catch (Exception ex)
+            {
+                Log.Write($"[CoRhino] command request unreadable ({name}): {ex.GetType().Name}: {ex.Message}");
+                try { File.Delete(claimed); } catch (Exception) { }
+                return;
+            }
+            try { File.Delete(claimed); } catch (Exception) { }
+
+            if (!Guid.TryParse(fileId, out _))
+            {
+                // Garbage filename: consumed above so the dir stays clean, but
+                // no response — there is no safe id to answer under.
+                Log.Write($"[CoRhino] command request dropped (non-uuid filename): {name}");
+                return;
+            }
+            if (!AgentCommands.TryParse(json, out var cmd, out var error, out _))
+            {
+                Log.Write($"[CoRhino] command request rejected ({name}): {error}");
+                // Answer under the FILENAME id — a silent drop reads as "panel
+                // is dead" to a polling orchestrator.
+                AgentCommands.WriteError(fileId, "unknown", error);
+                return;
+            }
+            if (!string.Equals(cmd.Id, fileId, StringComparison.OrdinalIgnoreCase))
+            {
+                Log.Write($"[CoRhino] command request rejected (body id != filename id): {name}");
+                AgentCommands.WriteError(fileId, cmd.Action, AgentCommands.ErrInvalidRequest);
+                return;
+            }
+            Application.Instance?.AsyncInvoke(() => DispatchCommand(cmd));
+        }
+
+        // UI thread. Validates the requester and hands the command straight to
+        // its handler — no consent gate (D22). The user is already in the loop
+        // upstream: writing a command file takes a Bash call the REQUESTER's
+        // own permission mode gates, and the protocol accepted local trust
+        // when from-spoofing was (D21 — any local process can write these
+        // files, so a banner was consent UX, not a defense). Visibility comes
+        // from the spawned tab itself plus a command-line note per spawn.
+        // Every path ends in a response file.
+        void DispatchCommand(AgentCommand cmd)
+        {
+            if (!_tabs.TryGetValue(cmd.From, out var requester))
+            {
+                // Unknown/self-invented "from": no live tab of ours, no service.
+                AgentCommands.WriteError(cmd.Id, cmd.Action, AgentCommands.ErrInvalidRequest);
+                return;
+            }
+            ExecuteCommand(requester, cmd);
+        }
+
+        void ExecuteCommand(AgentTab requester, AgentCommand cmd)
+        {
+            switch (cmd.Action)
+            {
+                case "spawnTab": HandleSpawnTabCommand(requester, cmd); break;
+                case "sendPrompt": HandleSendPromptCommand(requester, cmd); break;
+                case "closeTab": HandleCloseTabCommand(requester, cmd); break;
+            }
+        }
+
+        void HandleSpawnTabCommand(AgentTab requester, AgentCommand cmd)
+        {
+            if (_tabs.Count >= MaxTabs)
+            {
+                AgentCommands.WriteError(cmd.Id, cmd.Action, AgentCommands.ErrTabLimitReached);
+                return;
+            }
+            var child = SpawnTab(AgentCliKind.Claude, parentAgentId: requester.AgentId,
+                initialPrompt: cmd.Prompt, permissionMode: cmd.PermissionMode, name: cmd.Name);
+            // Persist the lineage NOW — this is the only moment both session ids
+            // are in hand (ParentAgentId is runtime-only). Claude children always
+            // have a pinned id; a codex REQUESTER may still be pre-discovery
+            // (SessionId null) — then the child just shows as a normal session.
+            if (requester.SessionId != null && child.SessionId != null)
+                SessionParents.Set(child.SessionId, requester.SessionId);
+            // Non-blocking visibility (D22): one command-line note per spawn —
+            // the new tab itself is the primary signal, this is the paper
+            // trail. A relaxed child mode is the one thing worth flagging
+            // loudly, since that child edits/executes without its own prompts.
+            var modeNote = cmd.PermissionMode is "acceptEdits" or "bypassPermissions"
+                ? L10n.T($"（権限モード: {cmd.PermissionMode} — ツール実行が承認なしで進みます）",
+                         $" (permission mode: {cmd.PermissionMode} — tools run without approval)")
+                : "";
+            Log.User(L10n.T(
+                $"[CoRhino] {ComputeLabel(requester)} ({requester.AgentId}) が子タブ {child.AgentId} を作成しました{modeNote}",
+                $"[CoRhino] {ComputeLabel(requester)} ({requester.AgentId}) spawned child tab {child.AgentId}{modeNote}"));
+            // Everything the orchestrator needs to OBSERVE the child rides in
+            // the response: completion via statusFile, results via transcript.
+            AgentCommands.WriteResponse(cmd.Id, new
+            {
+                ok = true,
+                action = cmd.Action,
+                agentId = child.AgentId,
+                sessionId = child.SessionId,
+                layer = child.LayerToken,
+                statusFile = Workspace.AgentStatusFilePath(_hostPort, child.AgentId),
+                transcript = child.SessionId != null ? SessionsCatalog.TranscriptPathFor(child.SessionId) : null,
+            });
+        }
+
+        void HandleSendPromptCommand(AgentTab requester, AgentCommand cmd)
+        {
+            if (!TryGetChild(requester, cmd.Target, out var target, out var error))
+            {
+                AgentCommands.WriteError(cmd.Id, cmd.Action, error);
+                return;
+            }
+            SendPromptToTab(target!, cmd.Text!);
+            AgentCommands.WriteResponse(cmd.Id, new { ok = true, action = cmd.Action });
+        }
+
+        void HandleCloseTabCommand(AgentTab requester, AgentCommand cmd)
+        {
+            if (!TryGetChild(requester, cmd.Target, out var target, out var error))
+            {
+                AgentCommands.WriteError(cmd.Id, cmd.Action, error);
+                return;
+            }
+            Log.Write($"[CoRhino] Closing tab {target!.AgentId} by orchestration ({requester.AgentId}).");
+            RemoveTab(target);
+            AgentCommands.WriteResponse(cmd.Id, new { ok = true, action = cmd.Action });
+        }
+
+        // The parent/child scope check (design §7): a requester may only touch
+        // tabs it spawned itself. Not-a-child outranks not-running so probing
+        // other tabs' liveness through error words is impossible.
+        bool TryGetChild(AgentTab requester, string? targetId, out AgentTab? target, out string error)
+        {
+            target = null;
+            error = AgentCommands.ErrNotYourChild;
+            if (targetId == null || !_tabs.TryGetValue(targetId, out var tab) || tab.ParentAgentId != requester.AgentId)
+                return false;
+            if (!tab.Session.IsRunning && !tab.Starting)
+            {
+                error = AgentCommands.ErrTargetNotRunning;
+                return false;
+            }
+            target = tab;
+            return true;
+        }
+
+        // ------------------------------------------------------------------
+        // Prompt delivery (the TUI-ready gate, design §5)
+        // ------------------------------------------------------------------
+
+        // UI thread. The ONLY way orchestration text enters a tab's PTY: queue
+        // until the TUI listens, then deliver as a paste. Raw writes lose the
+        // boot race (the proven failure mode this gate exists for).
+        void SendPromptToTab(AgentTab tab, string text)
+        {
+            tab.PendingPrompts.Add(text);
+            if (tab.TuiReady) FlushPromptQueue(tab);
+            else EnsureReadyTimeout(tab);
+        }
+
+        // UI thread. Snapshot + clear the queue, then deliver sequentially off
+        // the UI thread (the inter-write delays must not block it). Bracketed
+        // paste keeps multi-line prompts one input; the delayed \r submits
+        // after the TUI has ingested the paste. Single-flight per tab
+        // (PromptDelivering): two overlapping delivery loops would interleave
+        // paste markers and Enters into one garbled input.
+        void FlushPromptQueue(AgentTab tab)
+        {
+            if (tab.PromptDelivering || tab.PendingPrompts.Count == 0) return;
+            if (!tab.Session.IsRunning)
+            {
+                // ready raced a dying/not-yet-spawned PTY; keep the queue and
+                // keep the retry alive — a relaunch whose hook never fires
+                // must still get its prompts eventually.
+                Log.Write($"[CoRhino] {tab.AgentId}: prompt flush deferred (PTY not running).");
+                EnsureReadyTimeout(tab);
+                return;
+            }
+            var prompts = tab.PendingPrompts.ToArray();
+            tab.PendingPrompts.Clear();
+            tab.PromptDelivering = true;
+            var session = tab.Session;
+            _ = System.Threading.Tasks.Task.Run(async () =>
+            {
+                try
+                {
+                    // Settle before the first paste: SessionStart fires during
+                    // claude's boot, slightly BEFORE the composer accepts
+                    // input (field-observed on 8-1: a paste right on the hook
+                    // vanished and the child sat idle). A fixed grace costs
+                    // 0.6s per batch; losing the prompt costs minutes.
+                    await System.Threading.Tasks.Task.Delay(600);
+                    foreach (var p in prompts)
+                    {
+                        session.Write(Encoding.UTF8.GetBytes("\x1b[200~" + p + "\x1b[201~"));
+                        await System.Threading.Tasks.Task.Delay(300);
+                        session.Write(Encoding.UTF8.GetBytes("\r"));
+                        // Delivery isn't done until the hooks confirm the
+                        // submit (status → busy; waiting counts too — that is
+                        // busy plus a permission prompt). If it never comes,
+                        // the likeliest state is "paste survived in the
+                        // composer, Enter was eaten" — resend \r, which is
+                        // harmless on an empty composer. Reading tab.Status
+                        // off the UI thread is a benign atomic string read.
+                        var confirmed = false;
+                        for (var round = 0; round < 3 && !confirmed; round++)
+                        {
+                            if (round > 0) session.Write(Encoding.UTF8.GetBytes("\r"));
+                            for (var i = 0; i < 8; i++)
+                            {
+                                await System.Threading.Tasks.Task.Delay(500);
+                                if (tab.Status == "busy" || tab.Status == "waiting") { confirmed = true; break; }
+                            }
+                        }
+                        if (!confirmed)
+                            Log.Write($"[CoRhino] {tab.AgentId}: prompt submission unconfirmed (no busy after delivery + 2 Enter retries); orchestrator-side sendPrompt is the fallback.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // The tab died mid-delivery; its exit teardown owns cleanup.
+                    Log.Write($"[CoRhino] {tab.AgentId}: prompt delivery failed: {ex.GetType().Name}: {ex.Message}");
+                }
+                finally
+                {
+                    Application.Instance?.AsyncInvoke(() =>
+                    {
+                        tab.PromptDelivering = false;
+                        // Prompts that arrived mid-delivery parked behind the
+                        // guard; hand them to a fresh loop now.
+                        if (_tabs.TryGetValue(tab.AgentId, out var cur) && ReferenceEquals(cur, tab))
+                            FlushPromptQueue(tab);
+                    });
+                }
+            });
+        }
+
+        // (Re)arm the ready fallback. A hook that never fires (old CLI,
+        // stripped --settings) must degrade to "delivered late", never to
+        // "parked forever" — a possibly lost prompt beats a certainly lost
+        // one. Re-armable because a deferred flush (PTY down during a
+        // relaunch) needs another shot later, not just the first 15s.
+        void EnsureReadyTimeout(AgentTab tab)
+        {
+            if (tab.ReadyTimeoutTimer == null)
+            {
+                tab.ReadyTimeoutTimer = new System.Threading.Timer(_ =>
+                    Application.Instance?.AsyncInvoke(() =>
+                    {
+                        if (!_tabs.TryGetValue(tab.AgentId, out var cur) || !ReferenceEquals(cur, tab)) return;
+                        if (tab.PendingPrompts.Count == 0) return;
+                        if (!tab.TuiReady)
+                        {
+                            Log.Write($"[CoRhino] {tab.AgentId}: no ready signal after 15s; flushing prompt queue anyway.");
+                            tab.TuiReady = true;
+                        }
+                        FlushPromptQueue(tab);
+                        // Still parked (PTY down)? Keep trying until the tab
+                        // is removed or the prompts land.
+                        if (tab.PendingPrompts.Count > 0 && !tab.PromptDelivering) EnsureReadyTimeout(tab);
+                    }), null, 15000, System.Threading.Timeout.Infinite);
+            }
+            else
+            {
+                try { tab.ReadyTimeoutTimer.Change(15000, System.Threading.Timeout.Infinite); }
+                catch (ObjectDisposedException) { }
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // Tab manifest (design §8) — the orchestrator's "who is here" window
+        // ------------------------------------------------------------------
+
+        // UI thread (all callers mutate tab state there). Full rewrite via
+        // temp+move on every change; readers never see a torn file.
+        void WriteTabsManifest()
+        {
+            try
+            {
+                var tabs = _tabs.Values.Select(t => new
+                {
+                    agentId = t.AgentId,
+                    cli = CliId(t),
+                    sessionId = t.SessionId,
+                    layer = t.LayerToken,
+                    parent = t.ParentAgentId,
+                    name = t.CustomName,
+                    statusFile = Workspace.AgentStatusFilePath(_hostPort, t.AgentId),
+                    // Codex transcripts (rollouts) live elsewhere and are out of
+                    // V1's orchestration scope — null marks "not observable".
+                    transcript = t.Cli.Kind == AgentCliKind.Claude && t.SessionId != null
+                        ? SessionsCatalog.TranscriptPathFor(t.SessionId)
+                        : null,
+                }).ToList();
+                var payload = new { port = _hostPort, updatedAt = DateTime.UtcNow.ToString("o"), tabs };
+                var path = Workspace.TabsManifestPath(_hostPort);
+                var tmp = path + ".tmp";
+                File.WriteAllText(tmp, JsonSerializer.Serialize(payload, JsonOptions));
+                File.Move(tmp, path, overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                Log.Write($"[CoRhino] tabs manifest write failed: {ex.GetType().Name}: {ex.Message}");
+            }
         }
 
         // UI thread only (AsyncInvoke'd from the debounce timer).
@@ -1290,6 +1720,10 @@ namespace CoRhino.Panel
         void SendSessionsList(IReadOnlyList<SessionInfo> list)
         {
             if (!_webReady) return;
+            // Lineage rides each row as the raw parent id; the drawer resolves
+            // it to a display name against the same list (a deleted parent
+            // resolves to nothing → generic "agent-spawned" text).
+            var parents = SessionParents.LoadAll();
             var rows = list.Select(s => new
             {
                 sessionId = s.SessionId,
@@ -1306,6 +1740,7 @@ namespace CoRhino.Panel
                 // ANOTHER panel (per-panel _tabs; the drawer falls back to its
                 // generic "running" text there).
                 status = _tabs.Values.FirstOrDefault(t => t.SessionId == s.SessionId)?.Status,
+                spawnedBy = parents.TryGetValue(s.SessionId, out var parentId) ? parentId : null,
             });
             var json = JsonSerializer.Serialize(new { sessions = rows }, JsonOptions);
             _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onSessionsList({json})");
@@ -1483,6 +1918,7 @@ namespace CoRhino.Panel
                 tab.CustomName = normalized;
                 PushTabLabel(tab);
             }
+            WriteTabsManifest(); // names ride in the orchestration manifest too
             RequestSessionsScan();
         }
 
@@ -1527,6 +1963,7 @@ namespace CoRhino.Panel
                 _skillsWatcher?.Dispose();
                 _skillsPushTimer?.Dispose();
                 _statusWatcher?.Dispose();
+                _commandWatcher?.Dispose();
                 // A background scan finishing after this point must not touch the
                 // disposed WebView; its AsyncInvoke'd push checks _webReady first.
                 _webReady = false;
@@ -1535,6 +1972,10 @@ namespace CoRhino.Panel
                     tab.Session.Dispose();
                     UnregisterTab(tab);
                 }
+                // The manifest describes LIVE tabs only — a disposed panel has
+                // none, so the file goes too (UnregisterTab rewrote it along
+                // the way; this removes the final empty shell).
+                try { File.Delete(Workspace.TabsManifestPath(_hostPort)); } catch (Exception) { }
             }
             base.Dispose(disposing);
         }

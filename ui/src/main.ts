@@ -16,7 +16,8 @@ type CliKind = 'claude' | 'codex'
 // customName is the user-given name only (null when the label is an auto title
 // or the agentId) — the rename input must prefill with THIS, never the label,
 // or a blur-commit would freeze an auto title into a permanent custom name.
-type TabCreatedPayload = { agentId: string; sessionId: string | null; label: string; customName: string | null; cli: CliKind }
+// background: an orchestrated child tab — create it without stealing focus.
+type TabCreatedPayload = { agentId: string; sessionId: string | null; label: string; customName: string | null; cli: CliKind; background?: boolean }
 type TabLabelPayload = { agentId: string; label: string; customName: string | null }
 // An agent's activity state changed (from its status file, via the host's
 // watcher). sessionId rides along so the sessions drawer's matching live row
@@ -407,6 +408,7 @@ ${isWindowsWebView2 ? `
   mainEl.appendChild(termsEl)
   mainEl.appendChild(drawer.root)
   mainEl.appendChild(sessionsDrawer.root)
+
   rootEl.appendChild(tabbar)
   rootEl.appendChild(mainEl)
 
@@ -561,8 +563,18 @@ ${isWindowsWebView2 ? `
     }
 
     resizeObserver.observe(pane)
-    // New tab steals focus (matches clicking "+" to start working in it).
-    activateTab(agentId)
+    if (payload.background && activeTab) {
+      // Orchestrated child: keep the user where they are. The pane starts
+      // hidden (activateTab is what un-hides panes; this one never ran for
+      // it) and gets its real fit when the user first clicks the tab —
+      // until then the PTY runs at the spawn default, which the TUI
+      // redraws from on the later resize.
+      pane.classList.add('hidden')
+    } else {
+      // User-initiated tab steals focus (matches clicking "+" to start
+      // working in it). Also the fallback when no tab is active yet.
+      activateTab(agentId)
+    }
     // Report the initial geometry so the PTY sizes correctly from the first paint.
     post({ type: 'resize', agentId, cols: term.cols, rows: term.rows })
     debug(`tab ${agentId} created ${term.cols}x${term.rows}`)

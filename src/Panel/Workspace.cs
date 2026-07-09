@@ -49,11 +49,38 @@ namespace CoRhino.Panel
         /// </summary>
         public static string StatusDir => Path.Combine(RuntimeRoot, "status");
 
+        /// <summary>
+        /// ~/.corhino/runtime/agent-commands — the orchestration drop-box: an
+        /// agent writes cmd-&lt;port&gt;-&lt;uuid&gt;.json (temp+move), the port's panel
+        /// watches, executes, and answers under responses/&lt;uuid&gt;.json. The
+        /// reverse direction of the status files: there hooks write and the
+        /// panel reads; here agents write and the panel reads.
+        /// </summary>
+        public static string CommandsDir => Path.Combine(RuntimeRoot, "agent-commands");
+
+        /// <summary>
+        /// ~/.corhino/runtime/agent-commands/responses — one result file per
+        /// command id, deleted by the requesting agent after reading (stale
+        /// ones are swept on panel construction).
+        /// </summary>
+        public static string ResponsesDir => Path.Combine(CommandsDir, "responses");
+
+        /// <summary>
+        /// ~/.corhino/runtime/tabs-&lt;port&gt;.json — this panel's live-tab manifest
+        /// (agentId, sessionId, layer, parent, status/transcript paths).
+        /// Written by the panel on every tab change, read by orchestrating
+        /// agents; deleted when the panel is disposed.
+        /// </summary>
+        public static string TabsManifestPath(int port) => Path.Combine(RuntimeRoot, $"tabs-{port}.json");
+
         /// <summary>~/.corhino/session-names.json — user-given session names (owned by SessionNames).</summary>
         public static string SessionNamesPath => Path.Combine(BaseDir, "session-names.json");
 
         /// <summary>~/.corhino/session-layers.json — codex sessionId → layer token map (owned by SessionLayers).</summary>
         public static string SessionLayersPath => Path.Combine(BaseDir, "session-layers.json");
+
+        /// <summary>~/.corhino/session-parents.json — child→parent session lineage from orchestrated spawns (owned by SessionParents).</summary>
+        public static string SessionParentsPath => Path.Combine(BaseDir, "session-parents.json");
 
         /// <summary>~/.corhino/skills — the user's personal skill plugin root.</summary>
         public static string UserSkillsRoot => Path.Combine(BaseDir, "skills");
@@ -294,6 +321,12 @@ namespace CoRhino.Panel
             {
                 ["hooks"] = new Dictionary<string, object>
                 {
+                    // The TUI-ready signal for the orchestration prompt gate:
+                    // SessionStart fires from inside claude once the session is
+                    // up, i.e. after the boot window where PTY input is
+                    // silently eaten. The panel maps "ready" onto idle for
+                    // display and flushes queued prompts (design §5).
+                    ["SessionStart"] = Rule("ready"),
                     ["UserPromptSubmit"] = Rule("busy"),
                     ["PreToolUse"] = Rule("busy"),
                     // Also the "approval granted" edge: the permission dialog has

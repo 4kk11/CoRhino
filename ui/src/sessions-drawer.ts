@@ -35,6 +35,11 @@ export type SessionInfo = {
   // another panel (this panel can't see that tab's state — fall back to the
   // generic "running").
   status?: AgentStatus | null
+  // The parent session's id when an agent spawned this session via the
+  // orchestration protocol (from session-parents.json); null/absent for
+  // user-created sessions. Resolved to a display name against the same list —
+  // the parent may since have been deleted.
+  spawnedBy?: string | null
 }
 
 export type SessionsListPayload = { sessions: SessionInfo[] }
@@ -143,10 +148,17 @@ export function createSessionsDrawer(opts: {
       list.appendChild(empty)
       return
     }
-    for (const session of sessions) list.appendChild(buildRow(session))
+    // Lineage arrives as raw parent ids; resolve display names against this
+    // very list so a rename/auto-title is always current (no name duplication
+    // in the sidecar).
+    const byId = new Map(sessions.map((s) => [s.sessionId, s]))
+    for (const session of sessions) {
+      const parent = session.spawnedBy ? byId.get(session.spawnedBy) : undefined
+      list.appendChild(buildRow(session, parent ? (parent.customName ?? parent.title) : null))
+    }
   }
 
-  function buildRow(session: SessionInfo): HTMLElement {
+  function buildRow(session: SessionInfo, spawnParentName: string | null): HTMLElement {
     const blocked = session.isLive
 
     const row = document.createElement('div')
@@ -163,6 +175,15 @@ export function createSessionsDrawer(opts: {
     badge.textContent = session.cli === 'codex' ? '◆' : '●'
     badge.title = session.cli === 'codex' ? 'Codex' : 'Claude Code'
     head.appendChild(badge)
+    if (session.spawnedBy) {
+      // Agent-spawned marker, same visual slot as the CLI badge. The subline
+      // carries the parent's name; this is the at-a-glance flag.
+      const spawn = document.createElement('span')
+      spawn.className = 'spawnbadge'
+      spawn.textContent = '⧉'
+      spawn.title = L.spawnBadgeTitle
+      head.appendChild(spawn)
+    }
     const name = document.createElement('span')
     name.className = 'ss-name'
     name.textContent = session.customName ?? session.title
@@ -185,7 +206,7 @@ export function createSessionsDrawer(opts: {
     if (!session.isLive) head.appendChild(buildDeleteButton(session))
     row.appendChild(head)
 
-    const hasSub = session.isLive || session.customName
+    const hasSub = session.isLive || session.customName || session.spawnedBy
     if (hasSub) {
       const sub = document.createElement('div')
       sub.className = 'ss-sub'
@@ -211,6 +232,13 @@ export function createSessionsDrawer(opts: {
         auto.className = 'ss-autotitle'
         auto.textContent = session.title
         sub.appendChild(auto)
+      }
+      if (session.spawnedBy) {
+        const spawned = document.createElement('span')
+        spawned.className = 'ss-spawned'
+        // Parent name via textContent — it is user/model-authored.
+        spawned.textContent = spawnParentName ? L.spawnedFrom(spawnParentName) : L.spawnedOrphan
+        sub.appendChild(spawned)
       }
       row.appendChild(sub)
     }
@@ -346,6 +374,11 @@ function injectStyles() {
   .ss-autotitle {
     flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis;
     color: #777; font-size: 11px;
+  }
+  .spawnbadge { flex: 0 0 auto; font-size: 10px; color: #9a7fd0; }
+  .ss-spawned {
+    flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis;
+    color: #8a7ab0; font-size: 11px;
   }
 `
   document.head.appendChild(style)

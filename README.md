@@ -129,6 +129,25 @@ dotnet build src/CoRhino.csproj
 > 跨いで触ると論理衝突し得る。また各エージェントは互いの変更をリアルタイムには知らない（最新状態は
 > 都度問い合わせる）。
 
+### エージェントオーケストレーション（エージェントが子タブを操る）
+
+タブ内のエージェント自身が、**別のエージェントのタブを作成して作業を委譲**できる。
+「この作業を別のエージェントに任せて」のように頼むと、エージェントは同梱スキル
+`orchestrate-agents` の手順で子タブを spawn し、指示を送り、完了を検知して成果を回収し、
+終わった子タブを閉じる。
+
+- **承認ダイアログは出ない**。コマンドファイルを書く Bash 実行自体が親エージェントの
+  権限モードで既にゲートされており、二重の承認は待ち時間にしかならないため（→ design-history D22）。
+  子タブが作られると新しいタブが現れ、Rhino コマンドラインにも通知が出る
+- 子タブの権限モード（例: `acceptEdits` = 編集を承認なしで実行）が指定された場合は、
+  コマンドライン通知に警告付きで表示される
+- エージェントが操作できるのは**自分が作った子タブだけ**。ユーザーが開いたタブには触れない
+- 子タブは**フォーカスを奪わず背景で作られる**。進行状況はタブのステータスドット
+  （稼働中 → 完了で未読の緑）で分かり、見たくなったらクリックで開く
+- spawn で生まれたセッションは履歴一覧（🕘）で `⧉` バッジと「↳ 親名 から spawn」付きで
+  表示され、あとからでも見分けられる
+- タブ総数は 8 個まで。V1 で spawn できる子は Claude Code のみ
+
 ### セッションの終了と再起動
 
 パネル内で `/exit`（または `Ctrl-D` 等）で Claude Code を終了すると、そのタブの PTY とプロセスが
@@ -145,6 +164,7 @@ src/                        C# Rhino プラグイン
 ├── Commands/               "CoRhino" コマンド（パネルを開く）
 ├── Panel/
 │   ├── CoRhinoPanel.cs     WebView + xterm.js (タブ式)、ポート採番、複数エージェント起動、MCP ホスト起動
+│   ├── AgentCommands.cs    オーケストレーションのコマンドファイル・プロトコル（パース/検証/レスポンス）
 │   ├── SkillsCatalog.cs    スキル一覧ドロワーのデータ層（スキャン + frontmatter パース）
 │   ├── SessionsCatalog.cs  セッション一覧ドロワーのデータ層（~/.claude/projects のトランスクリプトスキャン）
 │   ├── SessionNames.cs     ユーザーが付けたセッション名の永続化（~/.corhino/session-names.json）
@@ -155,7 +175,7 @@ src/                        C# Rhino プラグイン
 ├── Cli/                    CLI アダプタ層（IAgentCli / ClaudeCli / CodexCli — 起動引数・隔離・ID 発見）
 ├── Pty/                    PTY セッション（Porta.Pty）と CLI 解決
 └── Resources/icon.png      パネルアイコン
-cc-plugin/                  同梱 Claude Code プラグイン（save-rhino-skill 等のオンボーディングスキル）
+cc-plugin/                  同梱 Claude Code プラグイン（save-rhino-skill / orchestrate-agents）
 ui/                         パネル UI（TypeScript + xterm.js, vite）
 docs/                       設計・アーキテクチャ・ロードマップ（下記）
 ```

@@ -1046,3 +1046,185 @@ xterm 自身が代わりに `preventDefault` してくれるわけではなく�
 Windows/WebView2 は既定経路のままなのでここで確実に止める必要がある）。
 
 **検証**: `tsc --noEmit` / `dotnet build` とも 0 エラー。実機（mac/Windows）確認は未。
+
+## D21: エージェントオーケストレーションはコマンドファイル + 同梱スキル（MCP サーバー不採用）（2026-07-09）
+
+**きっかけ**: リフレクション実証（run_python → pythonnet → `Panels.GetPanels` → `SpawnTab`/PTY 書き込み）で
+「タブ作成 → 別エージェントへの指示 → 成果検証」のフルサイクルが完動。観測系（D20 status /
+D10 transcript / D11 レイヤ分離）は既存機構で完備で、欠けているのは **公式な入口** と
+**TUI ready 前の入力ロス対策** だけと判明した。
+
+**検討した選択肢**:
+1. CoRhino 自前 MCP サーバー（spawn_tab / send_prompt / read_tab / close_tab）—
+   実証エージェント自身の提案。req/res が自然だが、HTTP サーバーのライフサイクル・
+   MCP プロトコル実装（SDK 依存 or JSON-RPC 手書き）を抱え、D2 とも緊張する
+2. Platform ホストへのツール登録 — タブはパネルの概念。Platform にパネル知識を漏らすのは責務の逆流
+3. Rhino コマンド + run_command — Rhino コマンドラインのプロンプト文字列受け渡しが破綻しやすい
+4. **コマンドファイル + watcher + 同梱スキル（採用）** — D20 の逆方向ミラー。レスポンスも
+   ファイルで返せば req/res は成立する。知識は cc-plugin スキル（D8 例外枠）が運ぶ
+
+**決定**（インタビュー 2026-07-09）: 承認は**タブ単位で一度だけ**（パネルバナー、拒否は再質問なし・
+永続なし）/ 操作スコープは**自分が spawn した子のみ** / V1 は spawnTab + sendPrompt + closeTab
+（codex 子・dumpScreen は V2）/ 子の permissionMode は**コマンドで指定可・既定は通常**
+（緩和指定はバナーに強調表示）。
+
+**実装の要点**:
+- claim-by-move（`.claimed` へ File.Move できた者だけが処理）で watcher の重複イベントを exactly-once に
+- ready ゲート: SessionStart フック → status ファイルに `ready` → `TuiReady` + キュー flush。
+  実証で最初のプロンプトが無言で飲まれた問題の恒久対策。配送は bracketed paste + 150ms 後 Enter、
+  フック不発は 15s フォールバック（滞留の確実な失敗よりロスの可能性を取る）
+- spawnTab レスポンスに statusFile / transcript パスを全部入れ、オーケストレータは以後ファイルを
+  読むだけ（「busy を見てから idle で完了」規約はスキルに明記 — 初期 idle の誤認防止）
+- `id` は uuid 形状のみ受理（レスポンスのファイル名になるためパストラバーサル防止）、
+  permissionMode は closed vocabulary（不正値が `--permission-mode` に届いて子が即死するのを境界で阻止）
+- not-your-child 判定を target-not-running より先に返す（他タブの死活を探る道具にさせない）
+
+**別件の発見**: 実証セッションの Bash が Rhino の PYTHONHOME を継承していた。
+PTY の env allow-list（B12）に PYTHONHOME は無いので、設計どおりなら漏れ得ない —
+Porta.Pty の unix 経路が実は親 env をマージしている疑い（「verbatim」の実証は Windows の
+CreateProcessW のみ）。→ **B19 で確定・修正**（execvp + setenv 継承。allow-list は unix では
+隔離にならず、毒変数スクラブで対応）。
+
+**Codex レビュー（同日）と対応**: HIGH 3件 / MED 3件 / LOW 1件。
+- HIGH「後出し昇格が無警告」→ グラントを tier 序数化（`GrantedTier`: bypassPermissions=2 >
+  acceptEdits=1 > default/plan=0）。同意済み tier を**超える** spawn は承認済みタブでも改めて
+  バナー、バナーはキュー内**最強 tier** を表示（UI は replace-in-place で追従）、決定待ち中は
+  後続コマンドも park（FIFO 保全）。※初版の修正は bool 2層（`ElevatedGranted`）で、再レビューが
+  「acceptEdits 同意が bypass まで覆う」「表示が最強でない」「非昇格の追い越し実行で FIFO 崩れ」
+  の3件を突いたため tier 序数に改修
+- HIGH「配送の interleave」→ タブ単位 single-flight（`PromptDelivering`）。ループ終了時に到着分を再 flush
+- HIGH「スキルの mv が cross-filesystem で非アトミック」→ temp を CommandsDir 内に変更（同一 dir rename）
+- MED「ready タイマーが one-shot」→ 再アーム可能に（deferred flush も再試行）
+- MED「レスポンス polling が遅延承認と競合」→ スキルを「読めたときだけ削除・2分粘る」に修正
+- MED「`from` 詐称」→ ローカル信頼として**受容**（architecture §9 / design §11 に明記済み。
+  per-tab secret は V2 で検討）
+- LOW「id が uuid 検証でない + 上書き」→ `Guid.TryParse` 化 + **ファイル名 id == 本文 id の強制**
+  （他人の id のレスポンスを本文詐称で上書きする経路を閉鎖。エラー応答もファイル名 id 宛て）
+
+**実機フィードバック（同日・8-1 フルサイクル成功）と対応**: 球の生成自体は約20秒で完走したが、
+総所要の大半が待ち時間だった。3要因と対応:
+1. **初期プロンプト不配送（バグ）** — 子が ready のまま固まり、オーケストレータの sendPrompt
+   再送で復旧していた。原因は SessionStart フックが composer の入力受付より早く発火すること。
+   対応: 配送前 settle 600ms + paste→Enter 間隔 300ms に拡大 + **提出確認ループ**
+   （status が busy/waiting になるまで未確認扱い、来なければ `\r` を最大2回再送 — Enter だけ
+   飲まれて paste が composer に残るケースの回収）。スキルにも「spawn 後 60 秒 busy 無しなら
+   sendPrompt 再送」の保険手順を明記
+2. **承認バナーが気づかれない（最大の待ち・6〜8分）** — 対応: バナー出現時に `Log.User` で
+   Rhino コマンドラインへ通知 + バナーにパルスアニメーション
+3. **ポーリングが Bash の 2 分タイムアウトに刈られる** — 対応: スキルの全ループを
+   「1回の Bash 実行 90 秒以内で刻んで再実行」に統一
+あわせてスキルに使い分けルールを追加: 数十秒の単発作業は子を作らず自分の run_python で
+（委譲のオーバーヘッドは分単位。効くのは並列・長時間・コンテキスト分離のみ）。
+
+## B19: セッション内 Bash で python3 が即死 — PYTHONHOME 漏れ = unix の env allow-list は最初から隔離になっていなかった（2026-07-09）
+
+**症状**: CoRhino から起動した Claude Code セッションの Bash で `python3` が
+`Fatal Python error: init_fs_encoding` / `No module named 'encodings'` で起動前に死ぬ。
+`which python3` は Homebrew の 3.12 を指すのに、`PYTHONHOME=~/.rhinocode/py39-rh8`
+（Rhino 内蔵 Python 3.9 のホーム）が環境に居座り、3.12 が標準ライブラリを見失う。
+D21 のオーケストレーション実証中に子タブで発見（allow-list に無い変数が見えている時点で異常）。
+
+**原因**: Porta.Pty の env 受け渡しは **OS で意味が違う**。
+- Windows: CreateProcessW に明示ブロック = dict が子環境の**すべて**（verbatim）。B12 の挙動と整合
+- unix: native `pty_spawn` は fork + entry ごとの setenv + **execvp**（dylib のシンボルで確認:
+  `_execvp` / `_setenv` / `_unsetenv` あり、execve 無し）= **子は親（Rhino）の全環境を継承**し、
+  dict は上書きに使われるだけ
+
+つまり PtySession の allow-list（B12）は unix では一度も隔離として働いておらず、Rhino が
+プロセス env にセットする `PYTHONHOME` がそのまま claude → Bash → 孫プロセスまで流れていた。
+B12 時の「Porta.Pty は dict を verbatim で渡す」というコメント・docs 記述は Windows でしか
+成立していなかった（unix 側は「たまたま困る変数が無かった」だけ）。
+
+**対応**: 継承前提の unix では「全隔離」を追わず、**壊す変数だけを明示的に落とす**
+毒変数スクラブを spawn 直前に追加（[PtySession.cs](../src/Pty/PtySession.cs)）:
+`PYTHONHOME` / `PYTHONPATH` / `PYTHONEXECUTABLE` を**空値**で dict に積む。空値は Porta.Pty
+native 自身が TMUX/COLUMNS 等で使う unsetenv 規約で、仮に setenv("") に落ちても CPython は
+空の PYTHON* を無視するため、どちらの実装でも python3 は直る。Windows は verbatim で
+漏れないためスクラブ対象外。呼び出し側 `env` が同名を明示した場合はそちらが勝つ
+（ContainsKey ガード）。**Rhino プロセス自身の env は一切触らない**ので、RhinoMCP の
+`run_python` / 内蔵 Python は従来どおり（消してはいけない変数を消さない、が切り分けの本体）。
+子エージェントタブも同じ PtySession 経路なので自動的に直る。
+`CodexSessionsCatalog.Delete` 等の Process.Start 経路は Rhino env を継承するが、
+node/.NET バイナリで PYTHONHOME の影響を受けないため対象外とした。
+
+**検証**: ビルド 0 エラー。実機（Rhino 再起動後）: ①セッション Bash で
+`python3 -c "print('ok')"`、②子タブの Bash でも同様、③ `run_python` が従来どおり、を確認する。
+
+## D22: オーケストレーションの承認バナー撤去 — ブロッキング承認は二重ゲートだった（2026-07-09）
+
+**決定**: D21 で入れたタブ単位グラント（承認バナー + tier 序数 + 保留キュー）を**全撤去**し、
+コマンドは要求元タブの検証（live なタブか + 親子スコープ + タブ上限）だけで即実行する。
+可視化は非ブロッキングに一本化: spawn ごとに `Log.User` で Rhino コマンドラインへ1行
+（緩和 permissionMode は警告付き）+ 新タブの出現そのもの。
+
+**理由**（「spawn の承認って必要?」というユーザーの疑問から再検討）:
+1. **防御としては最初からゼロ** — from 詐称をローカル信頼として受容した時点（D21）で、
+   同一マシンの任意プロセスがコマンドファイルを書ける。バナーは同意 UX であって防御ではなかった
+2. **二重ゲート** — コマンドファイルを書く Bash 実行自体が親エージェントの権限モードで
+   ゲートされる。default モードの親なら、ユーザーはその Bash 承認で**既に一度同意している**。
+   バナーは同じ行為への2回目の承認で、実機フィールドテストの最大遅延（放置 6–8 分）の正体だった
+3. **迂回路が常に開いている** — Bash を使える親は `claude -p --permission-mode bypassPermissions`
+   を直接叩けば headless で同等のことができる。バナーは行儀のいいエージェントしか止めない
+4. **危険の実体は spawn ではなく緩和モード** — default/plan の子は自分の権限プロンプトで止まる。
+   無音で通るのは親が bypass で走っている場合だけで、それはユーザーが既に全権を渡した状態
+
+**撤去したもの**: `OrchGrant` / `AgentTab.Grant` / `GrantedTier` / `PendingCommands` /
+`ParkCommand` / `PermissionTier` / `CommandTier` / `PushOrchestrationRequest` /
+`HandleOrchestrationDecision` / エラー語彙 `denied` / UI の `#orchbanner` 一式
+（`onOrchestrationRequest` / `orchestrationDecision` / orchQueue / i18n 6 キー）。
+2巡目 Codex レビューで固めた tier 序数もろとも消えるが、レビューが塞いだ穴は
+「グラント機構が在る前提での穴」であり、機構ごと無くなれば成立しない。
+スキルからも「承認待ちで数分」「denied なら諦める」等の記述を削除
+（レスポンスは通常 1–2 秒で返る前提に単純化）。
+
+**残るガード**: 親子スコープ（`not-your-child`）/ `MaxTabs = 8`（暴走 spawn の上限）/
+permissionMode の closed vocabulary 検証 / id の Guid 強制とファイル名一致。
+
+**トレードオフ**: 「エージェントが勝手にタブを作れる」ことへの明示同意は無くなる。
+気づく手段はタブ出現とコマンドライン通知のみ（承認拒否という操作自体が存在しない）。
+問題になったら、永続的な許可リスト設定（設定で opt-out）を V2 候補として検討する。
+
+## D23: オーケストレーション子タブはフォーカスを奪わない（2026-07-09）
+
+**決定**: エージェント起点の spawn（`ParentAgentId` 非 null）は `onTabCreated` に
+`background: true` を載せ、UI はアクティブ化せずにタブを作る（pane は hidden で開始 —
+un-hide は activateTab の仕事で、それが走らないだけ）。ユーザーの「+」・resume・初期タブは
+従来どおり即アクティブ化（アクティブタブが1つも無い場合の background も安全側でアクティブ化）。
+
+**理由**: ユーザーは親タブでの会話の真っ最中に spawn が起きる。そのたびに画面が子タブへ
+飛ぶと、多子ファンアウトでは操作不能になる（実機フィードバック）。子の進行は D20 の
+ステータスドット（稼働中 → 未読完了の緑）が既に伝えるので、フォーカス強奪に情報価値はない。
+
+**トレードオフ**: 背景で作られた子の PTY は spawn 既定サイズ（80x24）のまま走り、実サイズの
+fit はユーザーが初めてタブを開いた時（activateTab の safeFit → resize）に行われる。TUI は
+その resize で再描画されるため実害なし。
+
+## D24: Sessions Drawer で spawn 産セッションを可視化 — バッジ + 親名サブ行（ツリー不採用）（2026-07-09）
+
+**決定**: オーケストレーション spawn で生まれたセッションを履歴一覧で見分けられるようにする。
+形は**フラットな一覧のまま、行にマークを足す**: CLI バッジ横に `⧉`、サブ行に
+「↳ *親セッション名* から spawn」。ツリー（親の下にネスト）はインタビューで一度選ばれたが、
+再検討で本案に確定。
+
+**系譜の永続化**: 親子関係はこれまでランタイム限り（`ParentAgentId` + パネルと共に消える
+マニフェスト）だった。`~/.corhino/session-parents.json`（`{子sessionId: 親sessionId}`、
+`SessionParents` が SessionNames と同規律で所有）に **spawnTab 実行時に1回**書く —
+claude の子は `--session-id` で ID が先に確定しているので、その瞬間にペアが揃う。
+transcript からの推定は採らない（脆い・スキャン費用）。requester が ID 未発見の
+codex タブの場合は記録なし（子は普通のセッションとして並ぶ）。
+
+**バッジ案を選んだ理由（ツリーとの比較）**:
+1. **一覧の不変量を壊さない** — 履歴は「新しい順の1本のタイムライン」で、resume 対象を
+   時系列で探す道具。ネストは子を親の位置に引きずり、「さっき動いてたやつ」が
+   時系列の場所に居なくなる
+2. **端ケースが UI 設計に波及しない** — 親削除（孤児）・親子のソート矛盾・多段ネスト・
+   折りたたみ状態の管理がツリーでは全部本質問題になる。バッジでは「親名が引けなければ
+   汎用文言」の1分岐で済む
+3. **既存の視覚言語と一貫** — CLI バッジ（●/◆）・スキルドロワーの出所バッジと同じ
+   「行頭マーク + 補足サブ行」の文法に乗る
+4. 親名は表示時に**一覧から解決**する（sidecar に名前を複製しない）ので、親の rename に
+   自動追従する
+
+**トレードオフ**: 親→子の逆方向（この親からどの子が生まれたか）は一覧を目で拾うしかない。
+ファンアウト多用で履歴が汚れてきたら、spawn 産の折りたたみ/フィルタを次段として検討
+（ツリーはその後の選択肢として残る）。

@@ -91,6 +91,16 @@ namespace CoRhino.Panel
         /// feature is called done there); kept a pure function so the platform
         /// branch has one home.
         /// </summary>
+        /// <summary>
+        /// The transcript jsonl a workspace claude session writes, derived —
+        /// not discovered — from the session id (cwd is the one shared
+        /// workspace, see D10/D11). Exposed for the orchestration manifest and
+        /// spawn responses: an orchestrator reads its child's final report here.
+        /// The file may not exist yet (claude creates it lazily).
+        /// </summary>
+        internal static string TranscriptPathFor(string sessionId) =>
+            Path.Combine(ClaudeProjectsRoot, ProjectSlug(Workspace.WorkspaceRoot), sessionId + ".jsonl");
+
         internal static string ProjectSlug(string cwd)
         {
             var sb = new StringBuilder(cwd.Length);

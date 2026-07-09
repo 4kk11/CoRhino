@@ -314,6 +314,10 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
 - `SessionNames` … `~/.corhino/session-names.json` の `{sessionId: name}` を lock + write-through で所有。
   リネームは UI スレッド、読み出しはスキャン（BG）からも来る。V1 では剪定しない（live タブの ID はまだ
   jsonl が無いことがあり、スキャン基準の剪定は新しい名前を食う）。
+- `SessionParents` … `~/.corhino/session-parents.json` の `{子sessionId: 親sessionId}` を同じ規律で所有
+  （D24）。書くのは spawnTab 実行時の一度だけ — 親子ペアが揃うのはその瞬間しかない
+  （`ParentAgentId` はランタイム限り、マニフェストはパネルと共に消える）。一覧 push 時に
+  `spawnedBy` として各行に載る。剪定しないのも SessionNames と同運命。
 
 **責務**: **エージェント（タブ）ごとの**作業ディレクトリと設定ファイルの生成・所有。`static` ユーティリティ。
 
@@ -383,16 +387,22 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
 
 - `StartAsync`（[:24](../src/Pty/PtySession.cs#L24)）: 既に起動済みなら例外（再利用禁止＝使い捨ての契約）。
   - **環境は allow-list 方式**（[:31](../src/Pty/PtySession.cs#L31)）: OS 別のリストだけを親から引き継ぎ、
-    呼び出し側 `env`（PATH 上書き等）をマージ、`TERM` 既定 `xterm-256color`。Rhino の汚れた環境を
-    子に丸ごと渡さない。
+    呼び出し側 `env`（PATH 上書き等）をマージ、`TERM` 既定 `xterm-256color`。
     - unix: `HOME USER LOGNAME PATH SHELL LANG LC_ALL LC_CTYPE TMPDIR`
     - Windows: `USERPROFILE HOMEDRIVE HOMEPATH USERNAME USERDOMAIN APPDATA LOCALAPPDATA ProgramData
       ProgramFiles ProgramFiles(x86) ProgramW6432 TEMP TMP PATH PATHEXT ComSpec SystemRoot SystemDrive
       windir PROCESSOR_ARCHITECTURE NUMBER_OF_PROCESSORS OS`
-    - **なぜ OS 別か**: Porta.Pty はこの dict を**マージなしでそのまま**子に渡す（CreateProcessW / execve）。
-      unix 名は Windows に存在しないため、以前の Windows spawn は実質 `PATH`+`TERM` のみになり、
-      home 相対の処理すべて（セットアップビューの install.ps1 が書く `$env:USERPROFILE` /
-      `$env:LOCALAPPDATA`、git の `~/.gitconfig`、`TEMP` への書き込み）が壊れていた（design-history B12）。
+    - **重要（B19 で確定）: dict が verbatim なのは Windows だけ**（CreateProcessW に明示ブロックを
+      渡す）。unix の native 層は fork + entry ごとの setenv + **execvp** で、**子は Rhino の全環境を
+      継承**し dict は上に被さるだけ — allow-list は unix では隔離として機能しない。unix 名が
+      Windows に存在しないせいで Windows の子が実質 `PATH`+`TERM` のみになっていた B12 の修正が
+      「両 OS とも verbatim」という誤認のまま文書化されていた。
+    - **毒変数スクラブ（B19）**: unix では継承を前提に、子のツール群を壊す変数だけを明示的に落とす:
+      `PYTHONHOME` / `PYTHONPATH` / `PYTHONEXECUTABLE` を**空値**でセット（空値は Porta.Pty native の
+      unsetenv 規約。仮に setenv("") でも CPython は空の PYTHON* を無視する）。Rhino が内蔵 Python 用に
+      セットする `PYTHONHOME=~/.rhinocode/py39-rh8` が子の Bash に継承されると、システムの python3 が
+      標準ライブラリを見失い起動前に死ぬ（`No module named 'encodings'`）。Rhino プロセス自身の env は
+      触らないので `run_python` は無影響。呼び出し側 `env` が明示指定した場合はそちらを優先。
   - `PtyProvider.SpawnAsync` → `IPtyConnection`。`ProcessExited` を購読し `HandleExit`（[:57](../src/Pty/PtySession.cs#L57)）。
   - `ReadLoop`（[:69](../src/Pty/PtySession.cs#L69)）: 4096 バイトずつ読み `DataReceived` を発火。**EOF も終了シグナルとして扱う**
     （ホストによっては `ProcessExited` が来ないため）。
@@ -501,7 +511,9 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
   `deleteSession{sessionId}` / `installCli{agentId}` / `recheckCli{agentId}` /
   `openShellInTab{agentId}` / `debug`。
 - **受信窓口** `window.CoRhinoPanel`: C# 側が `ExecuteScriptAsync` で呼ぶ。
-  - `onTabCreated({agentId, sessionId, label, customName, cli})` → タブ＋xterm を生成しアクティブ化（cli バッジ付き）
+  - `onTabCreated({agentId, sessionId, label, customName, cli, background?})` → タブ＋xterm を生成しアクティブ化（cli バッジ付き）。
+    `background: true`（オーケストレーション子タブ）はアクティブ化せず裏で作る — フォーカスは奪わず、
+    進行はステータスドット（busy → 未読完了の緑）で見せる。実サイズの fit はユーザーが初めて開いた時
   - `onTabSession({agentId, sessionId})` → codex タブの ID 確定を反映
   - `onCliAvailability({claude, codex})` → ＋メニューの項目状態を更新
   - `onPtyData(agentId, text)` → 該当タブの `term.write(text)`
@@ -531,6 +543,9 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
   （稼働中/承認待ち/待機中）を出す — `status` が null（他パネルの live）は従来の「実行中」。
   行は `data-session-id` を持ち、`updateStatus(sessionId, status)` が該当行だけを in-place 更新する
   （リネーム編集は壊さない。まだ live 描画が無い行はスキップ = 次の一覧 push が拾う）。
+  **spawn 産セッション**（payload の `spawnedBy` 非 null）は CLI バッジ横に `⧉` バッジ + サブ行に
+  「↳ *親名* から spawn」（D24）。親名は同じ一覧から解決するので rename に自動追従、親が削除済みなら
+  汎用文言にフォールバック。
 - xterm 設定: `convertEol: true`。Windows ConPTY の bare `\n` 階段化を `\r\n` 合成で吸収。
 - **synchronized update のフレーム組立（`writeSynced`）**: PTY 出力は `term.write` に直行せず、
   `CSI ?2026h … ?2026l`（DEC 2026）で括られた再描画フレームを完成まで溜めて **1 回の write** で渡す。
@@ -580,6 +595,67 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
   - macOS: `~/Library/Application Support/McNeel/Rhinoceros/8.0/MacPlugIns/CoRhino`
   - Windows: `%APPDATA%\McNeel\Rhinoceros\myplugins\CoRhino`
   - ⚠ コピー先を直接編集しないこと。必ず再ビルドで反映する。
+
+### 2.11 エージェントオーケストレーション — `AgentCommands.cs` + パネル配線（D21）
+
+**責務**: タブ内エージェント自身による子タブの作成・指示・クローズ。設計の全容は
+[`plans/agent-orchestration-design.md`](plans/agent-orchestration-design.md)、判断の経緯は D21。
+プロトコルは**コマンドファイル**（MCP サーバーもコマンドも増やさない）— D20 の
+「フック→ファイル→watcher」の逆方向ミラー。
+
+- **`AgentCommands.cs`**（UI 非依存 static、SkillsCatalog と同じ規律）: リクエスト JSON の
+  パース + スキーマ検証（エラー語彙 `invalid-request` / `unsupported-cli` /
+  `not-your-child` / `target-not-running` / `tab-limit-reached`）、レスポンス書き出し
+  （temp+move）、パネル構築時の stale スイープ。誰が何をしてよいか（親子スコープ・
+  タブ上限）は**パネルの仕事**で、ここは形式検証だけを持つ。`id` はレスポンスのファイル名に
+  なるため **Guid としてパース可能なもののみ**受理し、さらにパネルが**ファイル名の id と本文の
+  id の一致**を強制する（本文で他人の id を名乗って、その id のレスポンスを上書きする経路を塞ぐ。
+  エラー応答も常にファイル名側の id 宛て）。
+- **Command watcher**（`StartCommandWatcher` / `OnCommandFileEvent`）: `agent-commands/` の
+  `cmd-<自port>-*.json` を監視（status watcher と同型のポート接頭辞フィルタ）。1ファイルに
+  複数イベントが立つため **claim-by-move**（`.claimed` へ `File.Move` できた者だけが処理）で
+  exactly-once にする。パース成功で `AsyncInvoke` → `DispatchCommand`（UI スレッド）。
+- **承認ゲートは置かない**（D22 — 初期実装のタブ単位グラント + tier 昇格バナーは撤去）:
+  コマンドファイルを書く Bash 実行自体が**要求元タブの権限モードで既にゲート**されており、
+  バナーは同じ行為への二重承認で待ち時間にしかならなかった（実機で 6–8 分の放置）。
+  from 詐称をローカル信頼として受容した時点（D21）で防御としての価値もない。可視化は
+  **非ブロッキング**で行う: spawn ごとに `Log.User` で Rhino コマンドラインに1行
+  （緩和 permissionMode 指定時は警告付き）+ 新タブの出現そのもの。
+- **スコープ**: `AgentTab.ParentAgentId` で親子を記録し、sendPrompt / closeTab は
+  **自分の子のみ**（`TryGetChild`。not-your-child 判定を not-running より先に返し、他タブの
+  死活を探る道具にさせない）。総タブ数は `MaxTabs = 8` でキャップ。
+- **TUI ready ゲート**（`SendPromptToTab` / `FlushPromptQueue`）: オーケストレーション文言が
+  PTY に入る**唯一の**経路。SessionStart フックが status ファイルに書く `ready` を
+  `ApplyAgentStatus` が特例処理（`TuiReady` セット + キュー flush、表示は idle 扱い）するまで
+  `PendingPrompts` に保留。配送は settle 600ms（SessionStart は composer の入力受付より
+  わずかに早く発火する — 実機 8-1 で ready 直後の paste が消失）→ bracketed paste
+  （`ESC[200~…201~`）→ 300ms → `\r`、その後 **status が busy/waiting になるまで提出未確認**
+  として扱い、来なければ `\r` を最大2回再送（Enter だけ飲まれ paste が composer に残る
+  ケースの回収。空 composer への `\r` は無害）。それでも未確認ならログ — オーケストレータ側の
+  sendPrompt 再送（スキルに保険手順あり）が最終フォールバック。**タブ単位 single-flight**
+  （`PromptDelivering` ガード。並行 flush は paste と Enter が interleave して入力が破損する —
+  配送ループ終了時に到着分を再 flush）。フック不発は 15 秒タイムアウトで配送（滞留の確実な
+  失敗よりロスの可能性を取る）。タイマーは**再アーム可能** — PTY 未起動で flush が deferred に
+  なったケース（relaunch 中）もプロンプトを永久滞留させない。spawnTab の初期プロンプトも
+  同じキューを通る（配送経路は1本）。
+- **タブマニフェスト**（`WriteTabsManifest`）: `tabs-<port>.json` に全タブの
+  agentId / cli / sessionId / layer / parent / statusFile / transcript を temp+move で全量
+  書き直し（RegisterTab / UnregisterTab / リネーム / codex ID 発見時）。パネル `Dispose` で削除。
+  transcript パスは `SessionsCatalog.TranscriptPathFor`（slug + sessionId から決定的導出）。
+- **エージェント側の知識**: 自分の agentId / port / パスは `--append-system-prompt` で注入
+  （ClaudeCli）。手順は同梱スキル `orchestrate-agents`（cc-plugin、D8 の例外枠）が運ぶ —
+  レスポンスのポーリングと削除、「busy を見てから idle で完了」規約、transcript tail の回収、
+  rhino MCP での裏取り。
+- **spawn オプション**: spawnTab コマンドの `permissionMode`（closed vocabulary:
+  default / plan / acceptEdits / bypassPermissions、境界で検証）は `SpawnContext.PermissionMode`
+  → `--permission-mode`。緩和指定はコマンドライン通知に警告付きで表示される。V1 は claude 子タブのみ。
+- **子タブはフォーカスを奪わない**（D23）: オーケストレーション spawn（`ParentAgentId` 非 null）は
+  `onTabCreated` に `background: true` を積み、UI はアクティブ化せずに作る。ユーザーは親タブでの
+  会話の途中であり、多子ファンアウトのたびに画面が飛ぶと使いものにならない。進行の合図は
+  ステータスドット（D20 の未読緑含む）。
+- **系譜の永続化**（D24）: spawnTab 実行時に `SessionParents.Set(子sessionId, 親sessionId)` を1回
+  書く。Sessions Drawer が spawn 産セッションを `⧉` バッジ + 親名サブ行で示す情報源。requester が
+  ID 未発見の codex タブなら記録なし（子は普通のセッションとして並ぶだけ）。
 
 ---
 
@@ -886,9 +962,13 @@ runscript からポートを渡せず「不明なコマンド: <port>」が漏�
 | `~/.corhino/workspace/CLAUDE.md` | セッション文脈（レイヤ値は持たない → D11）。初回 seed 後はユーザー所有 |
 | `~/.corhino/runtime/mcp-<port>-<agentId>.json` | rhino(http) サーバ定義。spawn 毎に上書き（ephemeral） |
 | `~/.corhino/session-names.json` | ユーザーが付けたセッション名（`{sessionId: name}`、`SessionNames` が所有） |
+| `~/.corhino/session-parents.json` | spawn 産セッションの親子系譜（`{子sessionId: 親sessionId}`、`SessionParents` が所有。→ D24） |
 | `~/.claude/projects/<workspace-slug>/<sessionId>.jsonl` | claude 自身のトランスクリプト（CoRhino は読むだけ。Sessions Drawer の情報源） |
 | `~/.corhino/skills/` | ユーザー自作スキル plugin（`--plugin-dir` で全セッションに載る）。骨格は初回 seed 後ユーザー所有 |
-| `<plugin dir>/cc-plugin/` | CoRhino 同梱のオンボーディングスキル（`save-rhino-skill`）。ソースはリポジトリの `cc-plugin/` |
+| `<plugin dir>/cc-plugin/` | CoRhino 同梱のオンボーディングスキル（`save-rhino-skill` / `orchestrate-agents`）。ソースはリポジトリの `cc-plugin/` |
+| `~/.corhino/runtime/agent-commands/` | オーケストレーションのコマンド置き場（`cmd-<port>-<uuid>.json`、エージェント→パネル。→ 2.11） |
+| `~/.corhino/runtime/agent-commands/responses/` | コマンド実行結果（`<uuid>.json`、パネル→エージェント。読了後エージェントが削除） |
+| `~/.corhino/runtime/tabs-<port>.json` | パネルのタブマニフェスト（オーケストレータの観測窓。パネル Dispose で削除） |
 | `%TMPDIR%/CoRhino.log` | 追記ログ |
 | `<plugin dir>/web/index.html` | バンドル済み UI（単一 HTML） |
 
@@ -925,6 +1005,10 @@ runscript からポートを渡せず「不明なコマンド: <port>」が漏�
 - **クロスプロセスの二重 resume ガードなし**: `LiveSessionIds` はプロセス内のみ。Rhino を2プロセス並べる
   （Windows のみ可能）と、両方から同じセッションを resume できてしまい транскрипト が混線し得る。
   `session-names.json` も last-write-wins。V1 の既知の限界。macOS は Rhino 2 プロセス起動不可のため影響なし。
+- **オーケストレーションの `from` はローカル信頼**: コマンドの送り手 ID は自己申告で、検証は
+  「自パネルの live なタブか」まで（status ファイルと同じ信頼水準 — 同一マシンの任意プロセスが
+  書ける）。実質的な統制は**要求元タブ自身の権限モード**が担う — コマンドファイルを書く
+  Bash 実行がそこでゲートされる（パネル側の承認バナーは D22 で撤去。→ 2.11 / D21 / D22）。
 
 ---
 

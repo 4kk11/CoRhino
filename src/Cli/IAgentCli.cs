@@ -19,6 +19,10 @@ namespace CoRhino.Cli
     /// <param name="LayerToken">The parallel-agent Rhino layer (s-XXXXXXXX) this
     /// session must confine its writes to. Null only when no session identity exists.</param>
     /// <param name="SpawnedAtUtc">Just before process launch; anchors codex rollout discovery.</param>
+    /// <param name="PermissionMode">An orchestrating parent's requested permission mode
+    /// for this child (claude --permission-mode). Null — the common case, and always for
+    /// user-created tabs — means the CLI's default. Vocabulary is validated at the
+    /// command boundary (AgentCommands.TryParse).</param>
     internal sealed record SpawnContext(
         string AgentId,
         int HostPort,
@@ -26,7 +30,8 @@ namespace CoRhino.Cli
         string? SessionId,
         bool Resume,
         string? LayerToken,
-        DateTime SpawnedAtUtc);
+        DateTime SpawnedAtUtc,
+        string? PermissionMode = null);
 
     /// <summary>
     /// Adapter for one agent CLI (claude, codex, …). Owns every per-CLI concern

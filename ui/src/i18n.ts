@@ -51,6 +51,9 @@ const ja = {
   minutesAgo: (n: number) => `${n}分前`,
   hoursAgo: (n: number) => `${n}時間前`,
   daysAgo: (n: number) => `${n}日前`,
+  spawnBadgeTitle: 'エージェントが spawn した子セッション',
+  spawnedFrom: (name: string) => `↳ ${name} から spawn`,
+  spawnedOrphan: '↳ エージェント spawn（親セッションは削除済み）',
 }
 
 const en: typeof ja = {
@@ -91,6 +94,9 @@ const en: typeof ja = {
   minutesAgo: (n: number) => `${n}m ago`,
   hoursAgo: (n: number) => `${n}h ago`,
   daysAgo: (n: number) => `${n}d ago`,
+  spawnBadgeTitle: 'Child session spawned by an agent',
+  spawnedFrom: (name: string) => `↳ spawned from ${name}`,
+  spawnedOrphan: '↳ agent-spawned (parent session deleted)',
 }
 
 const lang = window.CORHINO_LANG ?? (navigator.language.startsWith('ja') ? 'ja' : 'en')

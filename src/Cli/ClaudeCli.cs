@@ -61,6 +61,15 @@ namespace CoRhino.Cli
                 "--settings", Workspace.EnsureClaudeStatusSettings(ctx.HostPort, ctx.AgentId),
             };
 
+            // An orchestrating parent may relax the child's approval flow
+            // (design §1.3); vocabulary was validated at the command boundary.
+            // User-created tabs never carry a mode — claude's default rules.
+            if (ctx.PermissionMode != null)
+            {
+                args.Add("--permission-mode");
+                args.Add(ctx.PermissionMode);
+            }
+
             if (ctx.SessionId != null)
             {
                 // Pin the session identity: fresh tabs get their pre-generated
@@ -70,17 +79,27 @@ namespace CoRhino.Cli
                 // keeps growing).
                 args.Add(ctx.Resume ? "--resume" : "--session-id");
                 args.Add(ctx.SessionId);
-                // The parallel-agent layer, session-bound (see LayerTokenFor).
-                // The shared workspace CLAUDE.md holds the rules; this carries
-                // the one per-session value it can't.
+                // Per-session values the shared workspace CLAUDE.md can't carry:
+                // the parallel-agent layer (see LayerTokenFor) and the agent's
+                // own identity/paths for the orchestration protocol — without
+                // these a would-be orchestrator has to reverse-engineer who it
+                // is (the reflection experiment's first stumbling block).
                 args.Add("--append-system-prompt");
                 args.Add(L10n.T(
                     $"このセッションの担当 Rhino レイヤは `{ctx.LayerToken}` です。" +
                     "オブジェクトの作成・変更・削除はこのレイヤ配下のみで行ってください" +
-                    "（詳細は CLAUDE.md の「並列エージェントのルール」）。",
+                    "（詳細は CLAUDE.md の「並列エージェントのルール」）。" +
+                    $"\nあなたの agentId は `{ctx.AgentId}`、パネルポートは `{ctx.HostPort}` です。" +
+                    $"エージェントオーケストレーション（子エージェントのタブ作成・指示・回収）のコマンド置き場は " +
+                    $"`{Workspace.CommandsDir}`、タブ一覧マニフェストは `{Workspace.TabsManifestPath(ctx.HostPort)}` です。" +
+                    "使い方は orchestrate-agents スキルを参照してください。",
                     $"This session's assigned Rhino layer is `{ctx.LayerToken}`. " +
                     "Create, modify, and delete objects only under this layer " +
-                    "(see the parallel-agent rules in CLAUDE.md)."));
+                    "(see the parallel-agent rules in CLAUDE.md)." +
+                    $"\nYour agentId is `{ctx.AgentId}` and your panel port is `{ctx.HostPort}`. " +
+                    $"The agent-orchestration command drop-box is `{Workspace.CommandsDir}` and the " +
+                    $"live-tab manifest is `{Workspace.TabsManifestPath(ctx.HostPort)}`; " +
+                    "see the orchestrate-agents skill for usage."));
             }
 
             // CoRhino's bundled cc-plugin (onboarding skills like save-rhino-skill)
