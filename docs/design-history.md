@@ -963,3 +963,61 @@ compositionend で解除。座標は xterm が inline で書くのと同じ「�
 
 **B13 系のまとめ**: 隅固定（B13）→ 包含ブロックの罠で画面外（B15）→ 追従復帰（B16）→
 codex の置き去りカーソルに敗北 → 合成単位凍結（B17、最終形）。
+
+## 追加決定 D20: エージェントステータス表示 — CLI フック + ステータスファイル（2026-07-09）
+
+**意図**: 並列タブ運用で「どのエージェントが動いていて、どれが止まっているか」がタブを開かないと
+分からない。特に**承認待ちで止まっている**エージェントに気づけないのが実害。タブとセッション一覧に
+3状態（稼働中 busy / 承認待ち waiting / 待機中 idle）のドットを出し、非アクティブタブの完了は
+未読（緑）として開くまで残す。
+
+### 検知方式の判断
+
+- **PTY 出力ヒューリスティックは不採用**: アイドル時の再描画（スピナー・カーソル系）で誤検知する。
+  正確なイベントソースが両 CLI にあるのに近似を選ぶ理由がない。
+- **claude = 公式フック**（`UserPromptSubmit`/`PreToolUse`/`PostToolUse` → busy、
+  `Notification(permission_prompt)` → waiting、`Stop`/`SessionEnd` → idle）。
+  注入は spawn ごとに生成する settings JSON を `--settings` で渡す — `~/.claude` を汚さない D3 と
+  同じ立場で、settings 経由のフックは信頼確認プロンプトが出ない。
+- **codex = 同型フック**（0.142 系で claude 同型の hooks が入った。`PermissionRequest` → waiting、
+  ペイロードは stdin 渡し）。当初案は「notify + Enter 検知の近似」だったが、調査でフック実装を確認し
+  対称設計に変更（ユーザー確認済み）。注入は `-c hooks={...}` のインライン TOML。
+  未信頼フックの承認は `--dangerously-bypass-hook-trust` でスキップ — CoRhino 自身が注入する
+  フックをユーザーに vouch させる意味がないため。**トレードオフ**: フック未対応の古い codex は
+  未知フラグで起動失敗する = 最新 codex 必須（pre-alpha 方針によりフォールバック経路は作らない）。
+- **伝達はステータスファイル**（`~/.corhino/runtime/status/<port>-<agentId>`）: フックが状態語を
+  echo で書き、C# の FileSystemWatcher（skills watcher と同パターン、ただしデバウンスなし＝
+  レイテンシ優先・ファイル単位読み）が拾って `onTabStatus` を push。設定にパスを焼き込むので
+  session_id のパースが不要（codex の ID 事後発見とも無縁）。
+
+### Windows の要点
+
+- claude のフックが Windows で cmd.exe か Git Bash (sh) で走るかは**公式に不確定** →
+  コマンドを両シェルで同義の**ポリグリフ** `echo <state>>"<C:/forward/slash/path>"` にした
+  （`>` 前にスペースを入れない = cmd の末尾スペース混入防止。読み側は Trim() が契約）。
+- codex は unix=`sh -lc` / win=`cmd.exe /C` が仕様で確定しており、同じポリグリフ 1 本で
+  `commandWindows` の出し分けすら不要。
+- notify を使わなかった副次的理由: notify は argv 末尾に JSON を渡す直接 spawn（シェルなし）で、
+  Windows では .cmd/.bat の BatBadBut 系エスケープや PowerShell の引数再パースが地雷。
+  フックは stdin 渡しなので quoting 問題ごと消える。
+
+### 既知の穴と補完
+
+- **claude は Esc 中断で `Stop` が発火しない**（公式仕様）→ C# の stdin ルーティングで
+  「ちょうど `\x1b` 1 文字 かつ 非 idle」なら idle に落とすフォールバック（矢印キーは
+  `\x1b[A` 等の複数文字メッセージなので誤爆しない）。誤って落としても次のフックイベントが訂正する。
+- 承認拒否後は次イベントまで waiting 表示が残る（数秒で収束、許容）。
+- セッション一覧の status は**自パネルのタブ分のみ**（`_tabs` はパネルローカル）。他パネルの
+  live 行は従来どおり汎用「実行中」にフォールバック。
+- 各フック `timeout: 10`（echo は即時、ハング保険のみ）。
+
+**検証**: `dotnet build` 0 警告 0 エラー（tsc + vite 込み）。実機（mac/Windows）確認は未。
+
+### 改訂: ドット → グリフ（同日・実機フィードバック起点）
+
+初版はタブに丸ドット（●）を出したが、CLI バッジ（● claude）と同形で区別しづらいという
+フィードバックで即日改訂。状態ごとに**別グリフ**へ: `✻` アンバー回転 = busy（claude 本体の
+スピナーと同じ語彙）/ `‼` 赤点滅 = waiting / `✓` 緑 = 完了未読 / **idle は非表示**
+（静かな状態は無印 — タブバーのノイズも減る）。グリフ語彙は `statusGlyph()`（sessions-drawer.ts、
+ドロワーとタブバーで共用）、見た目は `.statusglyph` CSS（main.ts）。検討した代替は
+タブ下線バー（ブラウザ風）とバッジ加工（リング/グロー）— ユーザー選択でグリフ切替に決定。

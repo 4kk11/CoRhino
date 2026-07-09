@@ -6,6 +6,23 @@
 
 import { L, relTime } from './i18n'
 
+// The agent activity states the host's status watcher reports (the
+// onTabStatus / onSessionsList wire enum). Shared with main.ts's tab glyphs.
+export type AgentStatus = 'busy' | 'waiting' | 'idle'
+
+// The status glyph vocabulary (shared by tab bar and drawer rows): ✻ = busy
+// (claude's own spinner glyph), ‼ = waiting for approval, ✓ = finished
+// unseen, and idle renders nothing — quiet states stay unmarked. Styled and
+// animated by main.ts's .statusglyph rules.
+export function statusGlyph(state: AgentStatus | 'unseen'): string {
+  switch (state) {
+    case 'busy': return '✻'
+    case 'waiting': return '‼'
+    case 'unseen': return '✓'
+    default: return ''
+  }
+}
+
 export type SessionInfo = {
   sessionId: string
   title: string
@@ -14,6 +31,10 @@ export type SessionInfo = {
   lastActivity: string // ISO-8601 UTC
   cli: 'claude' | 'codex' // which CLI recorded it (row badge, matches tab badges)
   isLive: boolean // a live tab (any panel) runs this very session
+  // The live tab's activity state; null/absent when the session is live in
+  // another panel (this panel can't see that tab's state — fall back to the
+  // generic "running").
+  status?: AgentStatus | null
 }
 
 export type SessionsListPayload = { sessions: SessionInfo[] }
@@ -25,6 +46,8 @@ export type SessionsDrawer = {
   button: HTMLElement
   /** Host push / list response. Ignored while closed. */
   handleSessionsList: (payload: SessionsListPayload) => void
+  /** Live status transition for one session's row (from onTabStatus). */
+  updateStatus: (sessionId: string, status: AgentStatus) => void
   /** Close if open (drawer exclusivity). Fires onToggled like a user close. */
   close: () => void
 }
@@ -80,6 +103,32 @@ export function createSessionsDrawer(opts: {
     render(payload.sessions)
   }
 
+  function statusLabel(status: AgentStatus | null | undefined): string {
+    switch (status) {
+      case 'busy': return L.statusBusy
+      case 'waiting': return L.statusWaiting
+      case 'idle': return L.statusIdle
+      default: return L.running
+    }
+  }
+
+  // Patch one live row's glyph/label in place. Rows only carry the sub-line
+  // while live, so a session that JUST became live is simply skipped — the
+  // list push that follows a spawn re-renders it whole. Never touches an
+  // in-flight rename input (the patch is outside the name span).
+  function updateStatus(sessionId: string, status: AgentStatus) {
+    const row = list.querySelector(`.ss-row[data-session-id="${CSS.escape(sessionId)}"]`)
+    if (!row) return
+    const state = row.querySelector('.ss-state.live')
+    if (!state) return
+    state.textContent = statusLabel(status)
+    const glyph = row.querySelector('.ss-sub .statusglyph')
+    if (glyph) {
+      glyph.className = `statusglyph ${status}`
+      glyph.textContent = statusGlyph(status)
+    }
+  }
+
   function render(sessions: SessionInfo[]) {
     // A push can land while the user is typing a name (scans run on any tab
     // change); clearing the list would silently destroy the edit (removing a
@@ -102,6 +151,9 @@ export function createSessionsDrawer(opts: {
 
     const row = document.createElement('div')
     row.className = blocked ? 'ss-row blocked' : 'ss-row'
+    // updateStatus finds this row by id for live dot updates (ids are UUIDs —
+    // selector-safe, but escaped anyway).
+    row.dataset.sessionId = session.sessionId
 
     const head = document.createElement('div')
     head.className = 'ss-rowhead'
@@ -138,9 +190,19 @@ export function createSessionsDrawer(opts: {
       const sub = document.createElement('div')
       sub.className = 'ss-sub'
       if (session.isLive) {
+        // Status glyph + label when this panel owns the live tab; the generic
+        // "running" when another panel does (status is null there). The glyph
+        // span exists even when idle renders it empty — updateStatus patches
+        // it in place on later transitions.
+        if (session.status) {
+          const glyph = document.createElement('span')
+          glyph.className = `statusglyph ${session.status}`
+          glyph.textContent = statusGlyph(session.status)
+          sub.appendChild(glyph)
+        }
         const state = document.createElement('span')
         state.className = 'ss-state live'
-        state.textContent = L.running
+        state.textContent = statusLabel(session.status)
         sub.appendChild(state)
       }
       if (session.customName) {
@@ -227,7 +289,7 @@ export function createSessionsDrawer(opts: {
     input.select()
   }
 
-  return { root, button, handleSessionsList, close }
+  return { root, button, handleSessionsList, updateStatus, close }
 }
 
 function injectStyles() {

@@ -91,6 +91,10 @@ namespace CoRhino.Panel
             // agent CLI — its exit must re-probe and relaunch, not RemoveTab
             // (see OnSessionExited).
             public volatile bool InstallerActive;
+            // The agent's activity state ("busy" | "waiting" | "idle" — the
+            // onTabStatus wire enum), driven by the status file its CLI hooks
+            // write (see Workspace.AgentStatusFilePath). UI-thread-only.
+            public string Status = "idle";
         }
 
         readonly WebView _webView;
@@ -148,6 +152,11 @@ namespace CoRhino.Panel
         // One-shot debounce for watcher bursts (editors fire several fs events per
         // save). Re-armed on every event; fires once 300ms after the last.
         System.Threading.Timer? _skillsPushTimer;
+        // Live-update source for the status indicators: watches the shared
+        // ~/.corhino/runtime/status dir the CLI hooks write into. Unlike the
+        // skills watcher there is no debounce — each event names one file, the
+        // reads are a few bytes, and latency IS the feature here.
+        FileSystemWatcher? _statusWatcher;
 
         static readonly JsonSerializerOptions JsonOptions = new()
         {
@@ -194,6 +203,7 @@ namespace CoRhino.Panel
             Content = _webView;
             LoadWebView();
             StartSkillsWatcher();
+            StartStatusWatcher();
 
             // Spawn the first agent. More are added on demand when the user clicks
             // "+" in the tab bar (a 'createTab' message).
@@ -213,6 +223,7 @@ namespace CoRhino.Panel
         {
             _tabs.Remove(tab.AgentId);
             PendingCodexTabs.Remove(tab);
+            Workspace.DeleteAgentStatusFile(_hostPort, tab.AgentId);
             try { tab.DiscoveryCts?.Cancel(); } catch (ObjectDisposedException) { }
             if (tab.SessionId == null) return;
             // A tab removed MID-LAUNCH keeps its session marked live until the
@@ -654,6 +665,12 @@ namespace CoRhino.Panel
                 var (cliPath, prefixArgs, loginPath) = CliResolver.Resolve(cli);
                 var cwd = Workspace.EnsureWorkspace();
 
+                // Reset the status file BEFORE spawn: a relaunch reusing this
+                // port+agentId key must not inherit the previous session's last
+                // state. The write also round-trips through the status watcher,
+                // which resets the UI dot to idle.
+                Workspace.InitAgentStatusFile(_hostPort, tab.AgentId);
+
                 var env = new Dictionary<string, string>();
                 if (!string.IsNullOrEmpty(loginPath)) env["PATH"] = loginPath!;
 
@@ -903,6 +920,8 @@ namespace CoRhino.Panel
                             // agent-1 typically resolves (or fails to) before the
                             // UI boots — replay its setup state onto the fresh DOM.
                             PushCliSetup(tab);
+                            // Same replay for the status dot (fresh DOM = idle).
+                            PushTabStatus(tab);
                         }
                         PushCliAvailability();
                         break;
@@ -939,7 +958,18 @@ namespace CoRhino.Panel
                         {
                             var s = dataEl.GetString();
                             if (s != null)
+                            {
+                                // Interrupt fallback: claude's Stop hook does NOT
+                                // fire on an Esc interrupt (documented), which
+                                // would freeze the dot on busy/waiting. A LONE
+                                // ESC from xterm is the interrupt key (arrow keys
+                                // etc. arrive as multi-byte CSI sequences), so
+                                // downgrade to idle; a real hook event corrects
+                                // us within a beat if the agent kept going.
+                                if (s == "\x1b" && stdinTab!.Status != "idle")
+                                    ApplyAgentStatus(stdinTab!, "idle");
                                 stdinTab!.Session.Write(Encoding.UTF8.GetBytes(s));
+                            }
                         }
                         break;
 
@@ -1081,6 +1111,89 @@ namespace CoRhino.Panel
             }
         }
 
+        // Watch the shared status dir the CLI hooks write into and mirror each
+        // agent's state onto its tab. The dir is shared by every panel in the
+        // process (and by other Rhino processes on Windows), so events are
+        // filtered down to THIS panel's port before they touch any tab.
+        void StartStatusWatcher()
+        {
+            try
+            {
+                Directory.CreateDirectory(Workspace.StatusDir);
+                _statusWatcher = new FileSystemWatcher(Workspace.StatusDir)
+                {
+                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName,
+                };
+                FileSystemEventHandler onChange = (_, e) => OnStatusFileChanged(e.FullPath);
+                _statusWatcher.Created += onChange;
+                _statusWatcher.Changed += onChange;
+                _statusWatcher.Error += (_, e) =>
+                    Log.Write($"[CoRhino] Status watcher error (indicators frozen): {e.GetException()?.Message}");
+                _statusWatcher.EnableRaisingEvents = true;
+            }
+            catch (Exception ex)
+            {
+                // No watcher just means no live status; the panel works without it.
+                Log.Write($"[CoRhino] Status watcher unavailable: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        // Watcher thread. Parses "<port>-<agentId>" from the filename, reads the
+        // state word, and hands the transition to the UI thread. Reads race the
+        // hook's own write — one short retry covers the file-locked window; a
+        // still-unreadable or half-written file is simply dropped (the next
+        // transition rewrites it whole).
+        void OnStatusFileChanged(string fullPath)
+        {
+            var name = Path.GetFileName(fullPath);
+            var dash = name.IndexOf('-');
+            if (dash <= 0 || !int.TryParse(name.AsSpan(0, dash), out var port) || port != _hostPort)
+                return;
+            var agentId = name.Substring(dash + 1);
+
+            string status;
+            try { status = ReadStatusWord(fullPath); }
+            catch (Exception) { return; } // deleted (tab teardown) or mid-write; ignore
+            // cmd's echo appends \r\n and may sneak a space in — Trim() is the
+            // contract with Workspace.StatusEchoCommand. Unknown words (a torn
+            // read, a future state) are dropped rather than guessed.
+            if (status != "busy" && status != "waiting" && status != "idle") return;
+
+            Application.Instance?.AsyncInvoke(() =>
+            {
+                if (_tabs.TryGetValue(agentId, out var tab))
+                    ApplyAgentStatus(tab, status);
+            });
+        }
+
+        static string ReadStatusWord(string path)
+        {
+            try { return File.ReadAllText(path).Trim(); }
+            catch (IOException)
+            {
+                System.Threading.Thread.Sleep(30);
+                return File.ReadAllText(path).Trim();
+            }
+        }
+
+        // UI thread only: the single mutation site for a tab's status.
+        void ApplyAgentStatus(AgentTab tab, string status)
+        {
+            if (tab.Status == status) return;
+            tab.Status = status;
+            PushTabStatus(tab);
+        }
+
+        // The sessionId rides along so the UI can mirror the state onto the
+        // session drawer's matching row without a rescan.
+        void PushTabStatus(AgentTab tab)
+        {
+            if (!_webReady) return;
+            var encoded = JsonSerializer.Serialize(
+                new { agentId = tab.AgentId, sessionId = tab.SessionId, status = tab.Status }, JsonOptions);
+            _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onTabStatus({encoded})");
+        }
+
         // UI thread only (AsyncInvoke'd from the debounce timer).
         void PushSkillsListToAllTabs()
         {
@@ -1189,6 +1302,10 @@ namespace CoRhino.Panel
                 // possibly-live (pending codex id), or mid-delete — see
                 // IsSessionBlocked.
                 isLive = IsSessionBlocked(s.SessionId, s.Cli, s.LastActivityUtc),
+                // The live tab's activity state — null when the session lives in
+                // ANOTHER panel (per-panel _tabs; the drawer falls back to its
+                // generic "running" text there).
+                status = _tabs.Values.FirstOrDefault(t => t.SessionId == s.SessionId)?.Status,
             });
             var json = JsonSerializer.Serialize(new { sessions = rows }, JsonOptions);
             _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onSessionsList({json})");
@@ -1409,6 +1526,7 @@ namespace CoRhino.Panel
                 RhinoDoc.NewDocument -= OnDocChangedRestartHost;
                 _skillsWatcher?.Dispose();
                 _skillsPushTimer?.Dispose();
+                _statusWatcher?.Dispose();
                 // A background scan finishing after this point must not touch the
                 // disposed WebView; its AsyncInvoke'd push checks _webReady first.
                 _webReady = false;

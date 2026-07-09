@@ -199,6 +199,7 @@ PTY 配線（解決→SpawnContext→BuildArgs→spawn、未解決時はセッ�
 ```
 claude --strict-mcp-config --mcp-config <~/.corhino/runtime/mcp-<port>-<agentId>.json>
        --plugin-dir <~/.corhino/skills> --plugin-dir <plugin dir>/cc-plugin
+       --settings <~/.corhino/runtime/status-hooks-<port>-<agentId>.json>
        --session-id <fresh GUID>   （resume タブは代わりに --resume <sessionId>）
        --append-system-prompt "このセッションの担当 Rhino レイヤは `s-XXXXXXXX` です。…"
 ```
@@ -211,6 +212,11 @@ claude --strict-mcp-config --mcp-config <~/.corhino/runtime/mcp-<port>-<agentId>
 - `--plugin-dir <plugin dir>/cc-plugin` … CoRhino 同梱のオンボーディングスキル（`save-rhino-skill`：
   会話から `~/.corhino/skills` へ規約どおりスキルを書き出すメタスキル）。リポジトリの `cc-plugin/` を
   ビルドが assembly 隣へコピーする（web/ と同じ配送）。無ければ黙ってスキップ。
+- `--settings <path>` … spawn ごとに生成するステータスフック定義（`Workspace.EnsureClaudeStatusSettings`）。
+  `UserPromptSubmit`/`PreToolUse`/`PostToolUse` → busy、`Notification(permission_prompt)` → waiting、
+  `Stop`/`SessionEnd` → idle を `~/.corhino/runtime/status/<port>-<agentId>` に echo で書かせる
+  （→ 2.3 ステータスインジケータの配線 / D20）。settings 経由のフックは信頼確認プロンプトが出ず、
+  `~/.claude` にも触れない。
 - `--session-id <GUID>` … 新規タブは spawn 時に C# が採番した ID を claude に固定させる。これでタブ⇄
   トランスクリプト（`~/.claude/projects/<cwd-slug>/<id>.jsonl`）の対応をパース無しで把握できる（→ D10）。
   resume タブは `--resume <id>`（`--fork-session` は付けない＝同じ jsonl が伸び続ける）。
@@ -231,6 +237,32 @@ claude --strict-mcp-config --mcp-config <~/.corhino/runtime/mcp-<port>-<agentId>
   成功しても再プローブが「missing」のままになる。この経路で解決した場合は spawn 環境の `PATH` に
   該当ディレクトリを前置する。
 - Windows で `claudePath` が `.exe` でない（`.cmd`/`.bat` 等）場合は `cmd.exe /c <path> <args>` で起動。
+
+#### ステータスインジケータの配線（D20）
+
+タブとセッション一覧に出す 3 状態インジケータ（busy / waiting / idle + UI 側の未読）の C# 側。
+
+- **ソースは CLI フック**: 各 spawn に注入したフック（claude は `--settings`、codex は
+  `-c hooks={...}` + `--dangerously-bypass-hook-trust` → 2.7b）が、状態語を
+  `~/.corhino/runtime/status/<port>-<agentId>`（`Workspace.AgentStatusFilePath`）へ echo で書く。
+  コマンドは cmd.exe / sh の**両方で同義になるポリグリフ** `echo <state>>"<C:/斜線パス>"`
+  （claude のフックシェルは Windows で不確定、codex は win=cmd.exe /C・unix=sh -lc — 1 本で全組合せを
+  カバーする。読み側の `Trim()` が契約）。
+- **StartStatusWatcher**: `StatusDir` を FileSystemWatcher で監視。skills watcher と違い
+  **デバウンスなし**（イベントはファイル単位・読みは数バイト・レイテンシが本体）。ハンドラは
+  ファイル名の `<port>-` で**自パネル分だけ**を通し、状態語を読んで（IOException は 30ms 1 回リトライ、
+  未知語は破棄）`AsyncInvoke` → `ApplyAgentStatus`。
+- **ApplyAgentStatus / PushTabStatus**: `AgentTab.Status` の単一変異点。変化時のみ
+  `onTabStatus({agentId, sessionId, status})` を push（sessionId 同送で UI がセッション一覧の
+  live 行を再スキャンなしに更新できる）。`ready` 時は `PushCliSetup` と同様に全タブ分を replay。
+- **ライフサイクル**: `StartSession` が spawn 前に `InitAgentStatusFile`（idle で初期化 = stale 除去、
+  watcher 経由で UI ドットもリセット）、`UnregisterTab` が `DeleteAgentStatusFile`（runtime/ 唯一の
+  クリーンアップ経路）。
+- **Esc フォールバック**: claude は Esc 中断で `Stop` フックが発火しない（公式仕様）ため、`stdin`
+  ケースで「メッセージがちょうど `\x1b` 1 文字 かつ 非 idle」なら idle へ降ろす（矢印キー等は
+  `\x1b[…` の複数文字なので誤爆しない。誤降格は次のフックイベントが訂正）。
+- セッション一覧の `status` は `SendSessionsList` が自パネルの `_tabs` から sessionId 一致で付与。
+  **他パネルの live 行は null**（従来の汎用「実行中」表示にフォールバック）。
 
 #### 出力バッファリング
 
@@ -291,6 +323,12 @@ WebView の準備（`ready`）やタブ生成より前に PTY 出力が届くこ
   （D11。ポートドリフトにも当然影響されない）。spawn ごとの `.mcp.json` は `EnsureAgentMcpConfig` が
   `~/.corhino/runtime/mcp-<port>-<agentId>.json` に書く——`--mcp-config` は明示パスを取るので cwd に置く
   必要がなく、port がパネル一意なのでパネル間で衝突しない（claude は起動時に一度読むだけ）。
+- **ステータス系（D20）**: `StatusDir`（`~/.corhino/runtime/status/`）配下の
+  `<port>-<agentId>`（`AgentStatusFilePath`、スラッシュ正規化）に各エージェントのフックが状態語を書く。
+  `StatusEchoCommand` がその cmd/sh ポリグリフ echo を生成（claude 設定と codex 設定の両方が使う）。
+  `EnsureClaudeStatusSettings` は claude 用フック定義 JSON を `runtime/status-hooks-<port>-<agentId>.json`
+  に書いてパスを返す（`--settings` 用）。`InitAgentStatusFile`（spawn 前 idle 初期化）/
+  `DeleteAgentStatusFile`（タブ撤去時）がライフサイクルを持つ。
 - `ResolveFreePort(count=100)`: `BasePort=10500` から順に `TcpListener` で bind 試行し、最初に空いたポートを返す。
   100 個全滅なら 10500 を返す（その場合は後段の bind エラーで顕在化）。**ポートはパネル単位**（1パネル内の
   全エージェントは同じポートを共有する）。
@@ -396,8 +434,8 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
   アダプタはパネル状態に触らない）。`BuildArgs` / `LayerTokenFor` / `DiscoverSessionIdAsync` /
   `SupportsSkillsDrawer` / `BinaryName` / `DisplayName`。
 - `ClaudeCli.cs` … 旧 `StartSession` の claude 固有部を移設（`--strict-mcp-config` + `--mcp-config` /
-  `--plugin-dir` ×2 / `--session-id`|`--resume` / `--append-system-prompt`。順序も旧実装と同一）。
-  レイヤは sessionId から決定的導出（旧 `LayerFor` と同じ `s-<先頭8桁>`）。
+  `--plugin-dir` ×2 / `--settings`（ステータスフック → D20） / `--session-id`|`--resume` /
+  `--append-system-prompt`）。レイヤは sessionId から決定的導出（旧 `LayerFor` と同じ `s-<先頭8桁>`）。
 - `CodexCli.cs` … codex アダプタ。承認なしのサンドボックス内自動実行（`-a never -s workspace-write`、
   書き込みは workspace+tmp に加えユーザースキル置き場 `~/.corhino/skills` を
   `sandbox_workspace_write.writable_roots` で許可 — save-rhino-skill の保存先が workspace 外のため）。
@@ -408,6 +446,9 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
   `LoadsSkillsViaWorkspaceMount=true`: リンク健全性を検証して列挙）。セッション ID は spawn 後に rollout（1 行目
   `session_meta.cwd` == workspace）を突合して発見 — 帰属は panel の spawn ゲート直列化と burn mode で保証
   （詳細は [`plans/codex-cli-support-design.md`](plans/codex-cli-support-design.md) 5.2 / D14–D16）。
+  ステータスフックは `-c hooks={...}`（インライン TOML、claude と同じイベント→状態マップ・同じ
+  ポリグリフ echo）+ `--dangerously-bypass-hook-trust`（CoRhino 自身が注入するフックの信頼確認を
+  スキップ）。**フック未対応の古い codex は未知フラグで起動失敗する = 最新 codex 必須**（→ D20）。
 - `AgentCliRegistry.cs` … `AgentCliKind` → シングルトン instance。アダプタはステートレスで、
   spawn ごとの状態は `SpawnContext` で運ぶ。
 - 各 `AgentTab` は自分の `Cli`（アダプタ参照）を持ち、`StartSession` は
@@ -443,6 +484,12 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
   - **タブラベル**: 初期値は `onTabCreated` の `label`（手動名 > 自動タイトル > agentId を C# が計算）。
     ラベルの**ダブルクリック**でインライン `<input>` に切替（Enter=確定 / Esc=取消 / blur=確定、空で自動
     タイトルに戻す）→ `renameSession` を post。反映は C# の `onTabLabel` push を待つ（楽観描画しない）。
+  - **ステータスグリフ**（`.statusglyph`、CLI バッジの隣）: `onTabStatus` 駆動 —
+    busy=`✻` アンバー回転（claude 本体のスピナーと同じ語彙）/ waiting=`‼` 赤点滅 /
+    idle=**非表示**（静かな状態は無印）。**未読**（非アクティブ中に busy|waiting → idle に遷移）は
+    `✓` 緑になり、`activateTab` でクリア。丸ドットは CLI バッジ（●）と紛らわしいため不採用
+    （→ D20 の改訂）。グリフ語彙は `statusGlyph()`（sessions-drawer.ts）、CSS は main.ts が注入し、
+    セッションドロワーの live 行も同じクラスを使う。
 - **言語**（`i18n.ts` + `L10n.cs`）: UI 文言は **Rhino の言語設定に追従**する（`AppearanceSettings.LanguageIdentifier`
   が 1041=日本語なら日本語、それ以外は英語の2択）。C# が `LoadWebView` で単一 HTML の `<head>` に
   `window.CORHINO_LANG` を注入し、シェルは boot 時に同期的に正しい言語で DOM を組む（dev サーバ経路は
@@ -465,6 +512,8 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
   - `onSkillsList(payload)` → スキルドロワーへ（閉時・非アクティブタブの payload は無視）
   - `onSessionsList(payload)` → セッションドロワーへ（閉時は無視。タブ非依存）
   - `onTabLabel({agentId, label})` → 該当タブのラベル更新（リネーム確定・自動タイトル出現時）
+  - `onTabStatus({agentId, sessionId, status})` → タブのステータスグリフ更新 + 未読判定、
+    `sessionsDrawer.updateStatus(sessionId, status)` へ転送（live 行のグリフを再スキャンなしで更新）
 - **Skills Drawer**（`skills-drawer.ts`）: ⚡ で開閉（開閉時にアクティブタブを `safeFit()`）。行 =
   状態ドット（`●` ロード済み / `⚠` 要 reload）+ name + 出所バッジ（自作/同梱）。クリックで description
   展開 + 「エディタで開く」（`openSkill`）。ヘッダ ⟳ = `reloadSkills`（C# が PTY へ
@@ -478,7 +527,10 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
   当てにならないため**2段階確認**（1クリック目で「削除?」にアーム、3秒で自動解除、2クリック目で確定）。
   実行中セッションには 🗑 を出さない。タイトルはモデル/ユーザー由来テキストなので
   **必ず `textContent`**。skills と違い一覧はタブ非依存（`handleSkillsList` のようなアクティブタブ
-  フィルタは無い）。
+  フィルタは無い）。live 行のサブ行は payload の `status` に応じてステータスグリフ + 文言
+  （稼働中/承認待ち/待機中）を出す — `status` が null（他パネルの live）は従来の「実行中」。
+  行は `data-session-id` を持ち、`updateStatus(sessionId, status)` が該当行だけを in-place 更新する
+  （リネーム編集は壊さない。まだ live 描画が無い行はスキップ = 次の一覧 push が拾う）。
 - xterm 設定: `convertEol: true`。Windows ConPTY の bare `\n` 階段化を `\r\n` 合成で吸収。
 - **synchronized update のフレーム組立（`writeSynced`）**: PTY 出力は `term.write` に直行せず、
   `CSI ?2026h … ?2026l`（DEC 2026）で括られた再描画フレームを完成まで溜めて **1 回の write** で渡す。
@@ -582,6 +634,7 @@ CoRhino は内部に4つの通信境界を持つ。バグはたいていこの�
 | `onSkillsList(payload)` | `{agentId, skills[]}`。ドロワーが開いていて payload がアクティブタブのものなら描画（それ以外は無視）。listSkills/reloadSkills への応答のほか、watcher 検知時に**全タブ分** push される |
 | `onSessionsList({sessions[]})` | セッションドロワーが開いていれば描画（タブ非依存）。listSessions への応答のほか、タブ生成/消滅・resume・rename 後にも push される |
 | `onTabLabel({agentId, label})` | 該当タブのラベルを更新（リネーム確定、スキャンで自動タイトルが判明したとき） |
+| `onTabStatus({agentId, sessionId, status})` | タブのステータスグリフ（✻ busy / ‼ waiting / idle は非表示）を更新し未読（✓）を判定。sessionId があればセッションドロワーの live 行にも転送（→ 2.3 ステータスインジケータの配線 / D20） |
 
 ### 3.3 起動シーケンス（初回 `CoRhino` 実行）
 

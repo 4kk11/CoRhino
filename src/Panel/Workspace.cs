@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Text.Json;
 
 namespace CoRhino.Panel
 {
@@ -40,6 +41,13 @@ namespace CoRhino.Panel
 
         /// <summary>~/.corhino/runtime — per-spawn MCP configs (ephemeral, derived, safe to delete).</summary>
         static string RuntimeRoot => Path.Combine(BaseDir, "runtime");
+
+        /// <summary>
+        /// ~/.corhino/runtime/status — one file per live agent, written by hooks
+        /// injected into the CLI (claude via --settings, codex via -c hooks) and
+        /// watched by the panel to drive the tab/session status indicators.
+        /// </summary>
+        public static string StatusDir => Path.Combine(RuntimeRoot, "status");
 
         /// <summary>~/.corhino/session-names.json — user-given session names (owned by SessionNames).</summary>
         public static string SessionNamesPath => Path.Combine(BaseDir, "session-names.json");
@@ -209,6 +217,96 @@ namespace CoRhino.Panel
             var path = Path.Combine(RuntimeRoot, $"mcp-{port}-{agentId}.json");
             File.WriteAllText(path, McpConfigTemplate(port, agentId));
             Log.Write($"[CoRhino] Wrote MCP config at {path} (port {port}, agent {agentId})");
+            return path;
+        }
+
+        /// <summary>
+        /// This agent's status file, forward-slash normalized. The path is baked
+        /// into the hook commands at spawn time AND parsed back from watcher
+        /// events, so both sides must build it here. Keyed by port+agentId like
+        /// the MCP config: unique per panel, no session-id parsing needed.
+        /// </summary>
+        public static string AgentStatusFilePath(int port, string agentId) =>
+            Path.Combine(StatusDir, $"{port}-{agentId}").Replace('\\', '/');
+
+        /// <summary>
+        /// The hook command that records a status transition. Deliberately a
+        /// polyglot that means the same thing under cmd.exe AND sh: claude does
+        /// not document which shell runs hook commands on Windows, and codex uses
+        /// cmd.exe /C there — one string covers every combination. No space
+        /// before '&gt;' (cmd would include it in the payload; readers Trim()
+        /// anyway), quoted forward-slash absolute path (both shells accept it).
+        /// </summary>
+        public static string StatusEchoCommand(string state, int port, string agentId) =>
+            $"echo {state}>\"{AgentStatusFilePath(port, agentId)}\"";
+
+        /// <summary>
+        /// Reset this agent's status file to idle before spawn, so a tab never
+        /// shows a stale state from a previous session that used the same
+        /// port+agentId key.
+        /// </summary>
+        public static void InitAgentStatusFile(int port, string agentId)
+        {
+            Directory.CreateDirectory(StatusDir);
+            File.WriteAllText(AgentStatusFilePath(port, agentId), "idle");
+        }
+
+        /// <summary>Remove this agent's status file when its tab goes away (best-effort).</summary>
+        public static void DeleteAgentStatusFile(int port, string agentId)
+        {
+            try { File.Delete(AgentStatusFilePath(port, agentId)); }
+            catch (Exception ex) { Log.Write($"[CoRhino] status file delete failed ({agentId}): {ex.Message}"); }
+        }
+
+        /// <summary>
+        /// Write this spawn's status-hook settings and return its path (passed to
+        /// claude via --settings — hooks delivered this way need no interactive
+        /// trust approval and leave ~/.claude untouched, same stance as
+        /// --mcp-config). The hooks map claude's lifecycle onto the three-state
+        /// model the panel displays: prompt/tool activity → busy, a permission
+        /// prompt → waiting, response finished → idle. Stop does NOT fire on an
+        /// Esc interrupt (documented behavior) — the panel compensates by
+        /// watching stdin for a lone ESC.
+        /// </summary>
+        public static string EnsureClaudeStatusSettings(int port, string agentId)
+        {
+            Directory.CreateDirectory(StatusDir);
+            var path = Path.Combine(RuntimeRoot, $"status-hooks-{port}-{agentId}.json");
+
+            object[] Rule(string state, string? matcher = null)
+            {
+                var rule = new Dictionary<string, object>();
+                if (matcher != null) rule["matcher"] = matcher;
+                // timeout is a hang backstop only; the echo is effectively instant.
+                rule["hooks"] = new object[]
+                {
+                    new Dictionary<string, object>
+                    {
+                        ["type"] = "command",
+                        ["command"] = StatusEchoCommand(state, port, agentId),
+                        ["timeout"] = 10,
+                    },
+                };
+                return new object[] { rule };
+            }
+
+            var settings = new Dictionary<string, object>
+            {
+                ["hooks"] = new Dictionary<string, object>
+                {
+                    ["UserPromptSubmit"] = Rule("busy"),
+                    ["PreToolUse"] = Rule("busy"),
+                    // Also the "approval granted" edge: the permission dialog has
+                    // no answered-event, but an approved tool always runs and
+                    // lands here, flipping waiting back to busy.
+                    ["PostToolUse"] = Rule("busy"),
+                    ["Notification"] = Rule("waiting", "permission_prompt"),
+                    ["Stop"] = Rule("idle"),
+                    ["SessionEnd"] = Rule("idle"),
+                },
+            };
+
+            File.WriteAllText(path, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
             return path;
         }
 

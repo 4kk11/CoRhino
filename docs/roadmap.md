@@ -30,6 +30,15 @@ WIP / pre-alpha のため、ここの項目は予告なく増減・並び替え�
   [`plans/session-manager-tasks.md`](plans/session-manager-tasks.md)）。ビルド・tsc は pass だが
   実機での確認（共有ワークスペースへの spawn・ドロワー一覧/resume・レイヤ指示の実効・空セッション除外・
   リネーム永続・ドロワー排他）が未了。チェックリストは tasks ファイル参照。
+- **ステータス表示の実機確認（D20）**: 実装済み（2026-07-09、フック方式・→ design-history D20）。
+  ビルド・tsc は pass だが実機未確認: claude の busy/waiting/idle 遷移とタブドット、未読（緑）の
+  点灯/解除、Esc 中断フォールバック、codex のフック発火と `--dangerously-bypass-hook-trust` の実挙動、
+  セッション一覧 live 行の in-place 更新。**Windows 実機**では claude フックのシェル（cmd/sh どちらでも
+  ポリグリフ echo が効くこと）とステータスファイル内容（CRLF/末尾スペースの Trim 吸収）を必ず見る。
+- **ステータス表示の先送り分（D20 の続き）**:
+  - 他パネルの live セッションは一覧で汎用「実行中」のまま（status はパネルローカル。
+    プロセス内 static レジストリ化で解消可能だが V1 では見送り）。
+  - 承認**拒否**直後は次のフックイベントまで waiting 表示が残る（数秒で収束、許容と判断）。
 - **セッション管理の先送り分（D10/D11 の続き）**:
   - **Windows 対応ゲート**: `~/.claude/projects` の slug エンコーディング（`C:\` の `\`・`:`）が未検証。
     codex 分も同様: rollout パス・config.toml パースの Windows パス、および **workspace スキル symlink**

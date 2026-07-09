@@ -149,6 +149,31 @@ namespace CoRhino.Cli
             args.Add("-c");
             args.Add($"projects.{TomlKeySegment(ctx.Cwd)}.trust_level={TomlString("trusted")}");
 
+            // Status hooks (busy/waiting/idle → this agent's status file, watched
+            // by the panel). Codex ships claude-style lifecycle hooks; the
+            // command is the same cmd/sh polyglot echo claude uses, so no
+            // per-OS variant is needed (unix runs sh -lc, Windows cmd.exe /C).
+            // Non-managed hooks normally need one-time interactive trust; these
+            // are CoRhino's own, so the bypass flag is the correct stance — the
+            // user never wrote them and shouldn't be asked to vouch for them.
+            // NOTE: requires a hooks-era codex (~0.142+); older builds fail to
+            // launch on the unknown flag (pre-alpha: no fallback path).
+            string HookRule(string state) =>
+                $"[{{hooks=[{{type={TomlString("command")}," +
+                $"command={TomlString(Workspace.StatusEchoCommand(state, ctx.HostPort, ctx.AgentId))}," +
+                "timeout=10}]}]";
+            args.Add("--dangerously-bypass-hook-trust");
+            args.Add("-c");
+            args.Add("hooks={" +
+                $"UserPromptSubmit={HookRule("busy")}," +
+                $"PreToolUse={HookRule("busy")}," +
+                // Also the approval-granted edge: an approved tool always runs
+                // and lands here, flipping waiting back to busy.
+                $"PostToolUse={HookRule("busy")}," +
+                $"PermissionRequest={HookRule("waiting")}," +
+                $"Stop={HookRule("idle")}" +
+                "}");
+
             if (ctx.LayerToken != null)
             {
                 // The parallel-agent layer. developer_instructions appends to

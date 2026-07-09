@@ -2,7 +2,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { createSkillsDrawer, type SkillsListPayload } from './skills-drawer'
-import { createSessionsDrawer, type SessionsListPayload } from './sessions-drawer'
+import { createSessionsDrawer, statusGlyph, type AgentStatus, type SessionsListPayload } from './sessions-drawer'
 import { L } from './i18n'
 
 // The CLI a tab runs — the wire enum shared with the host (createTab /
@@ -18,6 +18,10 @@ type CliKind = 'claude' | 'codex'
 // or a blur-commit would freeze an auto title into a permanent custom name.
 type TabCreatedPayload = { agentId: string; sessionId: string | null; label: string; customName: string | null; cli: CliKind }
 type TabLabelPayload = { agentId: string; label: string; customName: string | null }
+// An agent's activity state changed (from its status file, via the host's
+// watcher). sessionId rides along so the sessions drawer's matching live row
+// updates without a rescan (null while a codex id is undiscovered).
+type TabStatusPayload = { agentId: string; sessionId: string | null; status: AgentStatus }
 // A codex tab's session id was discovered after spawn.
 type TabSessionPayload = { agentId: string; sessionId: string }
 // Which CLIs resolve on PATH (probed once per panel boot; missing ones grey
@@ -50,6 +54,8 @@ declare global {
       onSessionsList: (payload: SessionsListPayload) => void
       // A tab's label changed (rename, or an auto title appeared in a scan).
       onTabLabel: (payload: TabLabelPayload) => void
+      // An agent's activity state changed (busy / waiting / idle).
+      onTabStatus: (payload: TabStatusPayload) => void
       // A codex tab's session id landed (rename becomes possible).
       onTabSession: (payload: TabSessionPayload) => void
       // PATH probe result for the + menu.
@@ -188,6 +194,19 @@ function boot() {
   .clibadge.claude { color: #d0846a; }
   .clibadge.codex { color: #6f9fdf; }
   .tab .clibadge { flex: 0 0 auto; }
+  /* Agent status glyph (tab bar + sessions drawer). A round dot read as a
+     second CLI badge (● claude), so each state gets its own glyph instead:
+     ✻ spinning amber = busy (claude's own spinner vocabulary), ‼ blinking
+     red = waiting for approval (the state that most needs eyes), ✓ green =
+     finished behind an inactive tab (unseen), and idle shows NOTHING — a
+     quiet agent leaves a quiet tab. */
+  .statusglyph { font-size: 10px; flex: 0 0 auto; line-height: 1; }
+  .statusglyph.busy { color: #e0af68; animation: corhino-spin 1.6s linear infinite; }
+  .statusglyph.waiting { color: #e05555; animation: corhino-blink 0.8s step-start infinite; }
+  .statusglyph.unseen { color: #6ec26e; }
+  .statusglyph.idle { display: none; }
+  @keyframes corhino-spin { to { transform: rotate(360deg); } }
+  @keyframes corhino-blink { 50% { opacity: 0.2; } }
   /* CLI setup view: full overlay (missing) or bottom banner (failed). */
   .clisetup {
     position: absolute; inset: 4px; z-index: 5;
@@ -401,6 +420,12 @@ ${isWindowsWebView2 ? `
     pane: HTMLElement
     tabEl: HTMLElement
     labelEl: HTMLElement
+    statusEl: HTMLElement
+    // Last status pushed by the host (drives the tab dot).
+    status: AgentStatus
+    // The agent finished (busy/waiting → idle) while this tab was inactive;
+    // the dot shows green until the user opens the tab.
+    unseen: boolean
     lastCols: number
     lastRows: number
     // The CLI setup view covering (missing) or bannering (failed) this pane;
@@ -448,6 +473,11 @@ ${isWindowsWebView2 ? `
       t.pane.classList.toggle('hidden', !on)
       t.tabEl.classList.toggle('active', on)
     }
+    // Opening the tab is what "reading" a completion means.
+    if (tab.unseen) {
+      tab.unseen = false
+      renderTabStatus(tab)
+    }
     // The pane just became visible; fit to its real size and focus it.
     safeFit(tab)
     tab.term.focus()
@@ -469,8 +499,8 @@ ${isWindowsWebView2 ? `
     termsEl.appendChild(pane)
 
     const { term, fit } = createTerminal()
-    const { tabEl, labelEl } = buildTabButton(agentId, label, cli)
-    const tab: Tab = { agentId, sessionId, customName, cli, term, fit, pane, tabEl, labelEl, lastCols: term.cols, lastRows: term.rows, setupEl: null, sync: { pending: '', active: false, timer: null } }
+    const { tabEl, labelEl, statusEl } = buildTabButton(agentId, label, cli)
+    const tab: Tab = { agentId, sessionId, customName, cli, term, fit, pane, tabEl, labelEl, statusEl, status: 'idle', unseen: false, lastCols: term.cols, lastRows: term.rows, setupEl: null, sync: { pending: '', active: false, timer: null } }
     tabs.set(agentId, tab)
     tabscroll.insertBefore(tab.tabEl, addBtn)
 
@@ -522,7 +552,7 @@ ${isWindowsWebView2 ? `
     debug(`tab ${agentId} created ${term.cols}x${term.rows}`)
   }
 
-  function buildTabButton(agentId: string, initialLabel: string, cli: CliKind): { tabEl: HTMLElement; labelEl: HTMLElement } {
+  function buildTabButton(agentId: string, initialLabel: string, cli: CliKind): { tabEl: HTMLElement; labelEl: HTMLElement; statusEl: HTMLElement } {
     const el = document.createElement('div')
     el.className = 'tab'
     // CLI badge (matches the + menu): ● claude / ◆ codex.
@@ -531,6 +561,11 @@ ${isWindowsWebView2 ? `
     badge.textContent = cli === 'codex' ? '◆' : '●'
     badge.title = cli === 'codex' ? 'Codex' : 'Claude Code'
     el.appendChild(badge)
+    // Agent activity glyph (busy / waiting / unseen; hidden while idle),
+    // driven by onTabStatus.
+    const status = document.createElement('span')
+    status.className = 'statusglyph idle'
+    el.appendChild(status)
     const label = document.createElement('span')
     label.className = 'tablabel'
     label.textContent = initialLabel
@@ -553,7 +588,20 @@ ${isWindowsWebView2 ? `
     el.appendChild(label)
     el.appendChild(close)
     el.addEventListener('click', () => activateTab(agentId))
-    return { tabEl: el, labelEl: label }
+    return { tabEl: el, labelEl: label, statusEl: status }
+  }
+
+  function renderTabStatus(tab: Tab) {
+    // unseen only ever rides on idle (it is set on the busy/waiting → idle
+    // transition and cleared the moment the status leaves idle).
+    const state = tab.unseen ? 'unseen' : tab.status
+    tab.statusEl.className = `statusglyph ${state}`
+    tab.statusEl.textContent = statusGlyph(state)
+    tab.statusEl.title =
+      state === 'unseen' ? L.statusUnseen
+      : state === 'busy' ? L.statusBusy
+      : state === 'waiting' ? L.statusWaiting
+      : L.statusIdle
   }
 
   // Swap the tab label for an inline input. Enter = commit, Esc = cancel,
@@ -877,6 +925,23 @@ ${isWindowsWebView2 ? `
       if (!tab) return
       tab.customName = payload.customName
       tab.labelEl.textContent = payload.label
+    },
+    onTabStatus(payload: TabStatusPayload) {
+      const tab = tabs.get(payload.agentId)
+      if (!tab) return
+      const prev = tab.status
+      tab.status = payload.status
+      // "Completed while you weren't looking": a busy/waiting agent going idle
+      // behind an inactive tab keeps a green dot until the tab is opened. The
+      // active tab's completions are considered seen as they happen.
+      if (payload.status === 'idle' && prev !== 'idle' && tab !== activeTab) {
+        tab.unseen = true
+      } else if (payload.status !== 'idle') {
+        tab.unseen = false
+      }
+      renderTabStatus(tab)
+      // Mirror onto the sessions drawer's live row (no rescan needed).
+      if (payload.sessionId) sessionsDrawer.updateStatus(payload.sessionId, payload.status)
     },
     onTabSession(payload: TabSessionPayload) {
       const tab = tabs.get(payload.agentId)

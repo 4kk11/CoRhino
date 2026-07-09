@@ -56,6 +56,9 @@ namespace CoRhino.Cli
                 "--strict-mcp-config",
                 "--mcp-config", Workspace.EnsureAgentMcpConfig(ctx.HostPort, ctx.AgentId),
                 "--plugin-dir", Workspace.EnsureUserSkillsPlugin(),
+                // Status hooks (busy/waiting/idle → this agent's status file);
+                // the panel watches the file to drive the tab indicator.
+                "--settings", Workspace.EnsureClaudeStatusSettings(ctx.HostPort, ctx.AgentId),
             };
 
             if (ctx.SessionId != null)
