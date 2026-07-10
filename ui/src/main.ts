@@ -3,6 +3,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { createSkillsDrawer, type SkillsListPayload } from './skills-drawer'
 import { createSessionsDrawer, statusGlyph, type AgentStatus, type SessionsListPayload } from './sessions-drawer'
+import { createSettingsDrawer, type PanelSettingsPayload } from './settings-drawer'
 import { L } from './i18n'
 
 // The CLI a tab runs — the wire enum shared with the host (createTab /
@@ -63,6 +64,8 @@ declare global {
       onCliAvailability: (payload: CliAvailabilityPayload) => void
       // A tab's CLI setup state changed (missing / installing / failed).
       onCliSetup: (payload: CliSetupPayload) => void
+      // Panel settings (getSettings response / setSandbox echo).
+      onPanelSettings: (payload: PanelSettingsPayload) => void
     }
     chrome?: { webview?: { postMessage: (msg: string) => void } }
   }
@@ -84,6 +87,8 @@ type Outbound =
   | { type: 'installCli'; agentId: string }
   | { type: 'recheckCli'; agentId: string }
   | { type: 'openShellInTab'; agentId: string }
+  | { type: 'getSettings' }
+  | { type: 'setSandbox'; enabled: boolean }
   | { type: 'debug'; message: string }
 
 function post(msg: Outbound) {
@@ -374,11 +379,11 @@ ${isWindowsWebView2 ? `
   const termsEl = document.createElement('div')
   termsEl.id = 'terminals'
 
-  // Drawers: ⚡ (skills) and 🕘 (sessions) at the tab bar's right edge each
-  // toggle a fixed-width panel to the right of the terminals. The drawer modules
-  // own their DOM; we own the layout slots, the message bridge, exclusivity
-  // (opening one closes the other — there is only one 260px slot's worth of
-  // room), and refitting the terminal on open/close.
+  // Drawers: ⚡ (skills), 🕘 (sessions), and ⚙ (settings) at the tab bar's
+  // right edge each toggle a fixed-width panel to the right of the terminals.
+  // The drawer modules own their DOM; we own the layout slots, the message
+  // bridge, exclusivity (opening one closes the others — there is only one
+  // 260px slot's worth of room), and refitting the terminal on open/close.
   const drawer = createSkillsDrawer({
     requestList: (agentId) => post({ type: 'listSkills', agentId }),
     openSkill: (path) => post({ type: 'openSkill', path }),
@@ -386,7 +391,10 @@ ${isWindowsWebView2 ? `
     getActiveAgentId: () => activeTab?.agentId ?? null,
     getActiveCli: () => activeTab?.cli ?? null,
     onToggled: (open) => {
-      if (open) sessionsDrawer.close()
+      if (open) {
+        sessionsDrawer.close()
+        settingsDrawer.close()
+      }
       if (activeTab) safeFit(activeTab)
     },
   })
@@ -396,18 +404,34 @@ ${isWindowsWebView2 ? `
     renameSession: (sessionId, name) => post({ type: 'renameSession', sessionId, name }),
     deleteSession: (sessionId) => post({ type: 'deleteSession', sessionId }),
     onToggled: (open) => {
-      if (open) drawer.close()
+      if (open) {
+        drawer.close()
+        settingsDrawer.close()
+      }
+      if (activeTab) safeFit(activeTab)
+    },
+  })
+  const settingsDrawer = createSettingsDrawer({
+    requestSettings: () => post({ type: 'getSettings' }),
+    setSandbox: (enabled) => post({ type: 'setSandbox', enabled }),
+    onToggled: (open) => {
+      if (open) {
+        drawer.close()
+        sessionsDrawer.close()
+      }
       if (activeTab) safeFit(activeTab)
     },
   })
   tabbar.appendChild(sessionsDrawer.button)
   tabbar.appendChild(drawer.button)
+  tabbar.appendChild(settingsDrawer.button)
 
   const mainEl = document.createElement('div')
   mainEl.id = 'main'
   mainEl.appendChild(termsEl)
   mainEl.appendChild(drawer.root)
   mainEl.appendChild(sessionsDrawer.root)
+  mainEl.appendChild(settingsDrawer.root)
 
   rootEl.appendChild(tabbar)
   rootEl.appendChild(mainEl)
@@ -994,6 +1018,9 @@ ${isWindowsWebView2 ? `
         return
       }
       renderCliSetup(tab, payload)
+    },
+    onPanelSettings(payload: PanelSettingsPayload) {
+      settingsDrawer.handlePanelSettings(payload)
     },
   }
 

@@ -54,6 +54,13 @@ const ja = {
   spawnBadgeTitle: 'エージェントが spawn した子セッション',
   spawnedFrom: (name: string) => `↳ ${name} から spawn`,
   spawnedOrphan: '↳ エージェント spawn（親セッションは削除済み）',
+  // Settings Drawer
+  settingsBtn: '設定',
+  settingsTitle: '設定',
+  sandboxTitle: 'サンドボックス',
+  sandboxDesc: 'エージェントのコマンド実行を OS レベルで隔離し、ファイルの書き込み先を CoRhino ワークスペース内に制限します。範囲外の操作は通常の承認フローに戻ります。Rhino モデルの操作（MCP 経由）には影響しません。',
+  sandboxAppliesToNewTabs: '変更は新しいタブから適用されます（実行中のセッションには影響しません）',
+  sandboxUnsupported: 'この OS では利用できません（macOS のみ対応）',
 }
 
 const en: typeof ja = {
@@ -97,6 +104,12 @@ const en: typeof ja = {
   spawnBadgeTitle: 'Child session spawned by an agent',
   spawnedFrom: (name: string) => `↳ spawned from ${name}`,
   spawnedOrphan: '↳ agent-spawned (parent session deleted)',
+  settingsBtn: 'Settings',
+  settingsTitle: 'Settings',
+  sandboxTitle: 'Sandbox',
+  sandboxDesc: "Isolates the agent's command execution at the OS level, confining file writes to the CoRhino workspace. Anything outside falls back to the normal approval flow. Rhino model operations (via MCP) are unaffected.",
+  sandboxAppliesToNewTabs: 'Applies to new tabs (running sessions are unaffected)',
+  sandboxUnsupported: 'Not available on this OS (macOS only)',
 }
 
 const lang = window.CORHINO_LANG ?? (navigator.language.startsWith('ja') ? 'ja' : 'en')

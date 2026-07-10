@@ -156,6 +156,20 @@ dotnet build src/CoRhino.csproj
 MCP ホスト・ポートはそのまま再利用される）。セッションが生きている間に `CoRhino` を実行した
 場合はパネルが前面に来るだけ。
 
+### 設定（⚙）— サンドボックス
+
+タブバー右端の ⚙ で設定ドロワーが開く。現在の項目は**サンドボックス**の ON/OFF
+（`~/.corhino/settings.json` に保存、デフォルト OFF）。
+
+ON にすると、エージェントのコマンド実行（Bash）が OS レベルで隔離され、ファイルの書き込み先が
+CoRhino ワークスペース（`~/.corhino`）内に制限される。範囲外への正当な操作は通常の
+承認フローに戻るだけで、機能が使えなくなるわけではない。**Rhino モデルの操作（MCP 経由）には
+影響しない**——モデルの保護は従来どおりレイヤ規約と Undo が担う。
+
+- 変更は**新しいタブから**適用される（実行中のセッションには効かない）
+- **macOS のみ対応**（claude 組み込みサンドボックス = Seatbelt。Windows ではトグルが無効表示になる）
+- 対象は Claude Code タブのみ（codex は未配線 → roadmap）
+
 ## プロジェクト構成
 
 ```
@@ -169,6 +183,7 @@ src/                        C# Rhino プラグイン
 │   ├── SessionsCatalog.cs  セッション一覧ドロワーのデータ層（~/.claude/projects のトランスクリプトスキャン）
 │   ├── SessionNames.cs     ユーザーが付けたセッション名の永続化（~/.corhino/session-names.json）
 │   ├── SessionLayers.cs    codex セッション ID → レイヤの永続化（~/.corhino/session-layers.json）
+│   ├── PanelSettings.cs    パネル設定の永続化（~/.corhino/settings.json — サンドボックス ON/OFF）
 │   ├── Workspace.cs        ~/.corhino/workspace/（共有 cwd + CLAUDE.md/AGENTS.md）と runtime/ の .mcp.json、
 │   │                       ~/.corhino/skills/（ユーザースキル plugin 骨格）の seed
 │   └── RhinoMcpInstaller.cs  Rhino-MCP-Platform の yak オンボーディング

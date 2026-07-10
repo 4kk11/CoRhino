@@ -747,7 +747,10 @@ namespace CoRhino.Panel
                     tab.SessionId, tab.Resume,
                     tab.LayerToken,
                     DateTime.UtcNow,
-                    tab.RequestedPermissionMode);
+                    tab.RequestedPermissionMode,
+                    // Read at spawn time so the toggle applies to every tab
+                    // created after the flip, without a panel reload.
+                    PanelSettings.SandboxSupported && PanelSettings.Load().SandboxEnabled);
                 // A .cmd shim may have resolved to `node.exe <script.js>` —
                 // the script rides in front of the CLI's own args.
                 var args = prefixArgs.Concat(cli.BuildArgs(ctx)).ToArray();
@@ -915,6 +918,22 @@ namespace CoRhino.Panel
                     var encoded = JsonSerializer.Serialize(new { claude, codex }, JsonOptions);
                     _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onCliAvailability({encoded})");
                 });
+            });
+        }
+
+        // Settings drawer state (getSettings response / setSandbox echo).
+        // sandboxSupported rides along so the UI can grey the toggle out on
+        // Windows instead of offering a switch that silently does nothing.
+        void PushPanelSettings()
+        {
+            var s = PanelSettings.Load();
+            Application.Instance?.AsyncInvoke(() =>
+            {
+                if (!_webReady) return;
+                var encoded = JsonSerializer.Serialize(
+                    new { sandboxEnabled = s.SandboxEnabled, sandboxSupported = PanelSettings.SandboxSupported },
+                    JsonOptions);
+                _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onPanelSettings({encoded})");
             });
         }
 
@@ -1095,6 +1114,23 @@ namespace CoRhino.Panel
                     case "deleteSession":
                         if (root.TryGetProperty("sessionId", out var deleteIdEl))
                             DeleteSession(deleteIdEl.GetString());
+                        break;
+
+                    case "getSettings":
+                        PushPanelSettings();
+                        break;
+
+                    case "setSandbox":
+                        if (root.TryGetProperty("enabled", out var sandboxEl))
+                        {
+                            var s = PanelSettings.Load();
+                            s.SandboxEnabled = sandboxEl.GetBoolean();
+                            s.Save();
+                            Log.Write($"[CoRhino] sandbox setting → {s.SandboxEnabled} (new tabs only).");
+                            // No optimistic UI: the drawer renders what was
+                            // actually saved (same stance as renameSession).
+                            PushPanelSettings();
+                        }
                         break;
 
                     case "debug":

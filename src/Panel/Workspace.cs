@@ -73,6 +73,9 @@ namespace CoRhino.Panel
         /// </summary>
         public static string TabsManifestPath(int port) => Path.Combine(RuntimeRoot, $"tabs-{port}.json");
 
+        /// <summary>~/.corhino/settings.json — user-facing panel settings (see PanelSettings).</summary>
+        public static string SettingsPath => Path.Combine(BaseDir, "settings.json");
+
         /// <summary>~/.corhino/session-names.json — user-given session names (owned by SessionNames).</summary>
         public static string SessionNamesPath => Path.Combine(BaseDir, "session-names.json");
 
@@ -286,16 +289,17 @@ namespace CoRhino.Panel
         }
 
         /// <summary>
-        /// Write this spawn's status-hook settings and return its path (passed to
-        /// claude via --settings — hooks delivered this way need no interactive
-        /// trust approval and leave ~/.claude untouched, same stance as
-        /// --mcp-config). The hooks map claude's lifecycle onto the three-state
+        /// Write this spawn's --settings file and return its path (settings
+        /// delivered this way need no interactive trust approval and leave
+        /// ~/.claude untouched, same stance as --mcp-config). It carries the
+        /// status hooks always, plus the sandbox block when the panel setting
+        /// is on. The hooks map claude's lifecycle onto the three-state
         /// model the panel displays: prompt/tool activity → busy, a permission
         /// prompt → waiting, response finished → idle. Stop does NOT fire on an
         /// Esc interrupt (documented behavior) — the panel compensates by
         /// watching stdin for a lone ESC.
         /// </summary>
-        public static string EnsureClaudeStatusSettings(int port, string agentId)
+        public static string EnsureClaudeStatusSettings(int port, string agentId, bool sandbox)
         {
             Directory.CreateDirectory(StatusDir);
             var path = Path.Combine(RuntimeRoot, $"status-hooks-{port}-{agentId}.json");
@@ -338,6 +342,31 @@ namespace CoRhino.Panel
                     ["SessionEnd"] = Rule("idle"),
                 },
             };
+
+            if (sandbox)
+            {
+                // OS-level isolation for the Bash tool (macOS Seatbelt). The
+                // sandbox's write default is cwd + $TMPDIR, but CoRhino's
+                // orchestration surfaces live OUTSIDE cwd (~/.corhino/workspace):
+                // the agent-commands drop-box, the status files, and the user
+                // skills root are all ~/.corhino siblings — allow the whole
+                // BaseDir or orchestration and save-rhino-skill break.
+                // allowUnsandboxedCommands keeps an escape hatch: a command that
+                // can't run sandboxed (e.g. exporting outside ~/.corhino) falls
+                // back to the normal permission flow instead of failing.
+                // failIfUnavailable=false: if the OS can't sandbox, degrade to
+                // today's behavior rather than refusing to start the session.
+                settings["sandbox"] = new Dictionary<string, object>
+                {
+                    ["enabled"] = true,
+                    ["failIfUnavailable"] = false,
+                    ["allowUnsandboxedCommands"] = true,
+                    ["filesystem"] = new Dictionary<string, object>
+                    {
+                        ["allowWrite"] = new[] { BaseDir },
+                    },
+                };
+            }
 
             File.WriteAllText(path, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
             return path;

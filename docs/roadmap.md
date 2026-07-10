@@ -35,6 +35,12 @@ WIP / pre-alpha のため、ここの項目は予告なく増減・並び替え�
   点灯/解除、Esc 中断フォールバック、codex のフック発火と `--dangerously-bypass-hook-trust` の実挙動、
   セッション一覧 live 行の in-place 更新。**Windows 実機**では claude フックのシェル（cmd/sh どちらでも
   ポリグリフ echo が効くこと）とステータスファイル内容（CRLF/末尾スペースの Trim 吸収）を必ず見る。
+- **サンドボックスの実機確認（D25）**: 実装済み（2026-07-10、→ design-history D25）。ビルド・tsc は
+  pass だが実機（macOS）未確認: トグル ON → 新規タブで sandbox が実際に効くこと（cwd 外への書き込みが
+  ブロック/フォールバックされる）、**status hooks（echo → ~/.corhino/runtime/status/）が sandbox 有効時も
+  タブインジケータを駆動できること**（hooks が sandbox 対象かはドキュメント上不明確 —
+  `allowWrite: ~/.corhino` でカバーされる想定の検証）、orchestrate-agents の drop-box 書き込み、
+  save-rhino-skill のスキル書き出し、MCP（direct-HTTP localhost）が無影響であること。
 - **ステータス表示の先送り分（D20 の続き）**:
   - 他パネルの live セッションは一覧で汎用「実行中」のまま（status はパネルローカル。
     プロセス内 static レジストリ化で解消可能だが V1 では見送り）。
@@ -66,6 +72,10 @@ WIP / pre-alpha のため、ここの項目は予告なく増減・並び替え�
   rollout からのタイトル抽出（先頭プロンプト以上のもの）を検討
 - **初回タブ CLI の設定化 / 記憶**: 現状は常に claude（インタビューで決定）。codex 主体ユーザー向けに
   既定 CLI の設定 or 前回選択の記憶を検討
+- **codex のサンドボックス配線（D25 の続き）**: パネルのサンドボックス設定は現状 claude のみに効く
+  （`SpawnContext.SandboxEnabled` を CodexCli は無視）。codex は `--sandbox workspace-write` 等の
+  独自フラグ体系を持つので、同じトグルにマップするなら書き込み許可ディレクトリ（~/.corhino）の
+  指定方法と併せて別途設計が要る
 - **`codex fork` / `archive` の UI 対応**: スコープ外とした操作。必要になったら Sessions Drawer に追加
 - **exec モードの MCP auto-cancel（upstream #24135）**: CoRhino は TUI 利用なので現状無関係だが、
   headless 用途（将来の自動化）を作る場合はこのバグの解消が前提

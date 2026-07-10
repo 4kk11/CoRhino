@@ -1228,3 +1228,56 @@ codex タブの場合は記録なし（子は普通のセッションとして�
 **トレードオフ**: 親→子の逆方向（この親からどの子が生まれたか）は一覧を目で拾うしかない。
 ファンアウト多用で履歴が汚れてきたら、spawn 産の折りたたみ/フィルタを次段として検討
 （ツリーはその後の選択肢として残る）。
+
+## D25: サンドボックスは claude 組み込み（settings マージ）+ パネル設定トグル — srt ラップ不採用（2026-07-10）
+
+**決定**: エージェントの Bash 実行を OS レベルで隔離するオプションを追加する。実装は
+**claude 組み込みサンドボックス**（macOS Seatbelt）を、既存の `--settings` ファイル
+（status hooks と同居）に `sandbox` ブロックをマージして有効化する形。ON/OFF は
+パネルの設定ドロワー（⚙）で切り替え、`~/.corhino/settings.json`（`PanelSettings`）に永続化。
+デフォルト **OFF**（サンドボックスは in-sandbox コマンドの自動許可など承認フローを変えるため、
+ユーザーが知って opt-in する）。反映は spawn 時読み取り = **次に起動するタブから**。
+
+**設定内容**:
+
+```json
+"sandbox": {
+  "enabled": true,
+  "failIfUnavailable": false,
+  "allowUnsandboxedCommands": true,
+  "filesystem": { "allowWrite": ["~/.corhino"] }
+}
+```
+
+- `allowWrite: ~/.corhino` — サンドボックスの書き込みデフォルトは cwd（`~/.corhino/workspace`）+
+  $TMPDIR だが、オーケストレーションの drop-box（`runtime/agent-commands`）・status ファイル・
+  ユーザースキル（`skills/`）は **cwd の外**（~/.corhino 直下の兄弟）。これを許可しないと
+  orchestrate-agents と save-rhino-skill が壊れる
+- `allowUnsandboxedCommands: true` — 範囲外の正当な操作（デスクトップへの書き出し等）は
+  通常の承認フローにフォールバックし、機能は死なない
+- `failIfUnavailable: false` — 非対応環境では従来動作に劣化（セッション起動を拒否しない）
+
+**なぜ組み込み（srt ラップではなく）**:
+1. **direct-HTTP を壊さない** — 組み込みサンドボックスが隔離するのは Bash ツールの子プロセスで、
+   claude 本体ではない。MCP 接続（`http://localhost:<port>/`）は claude 本体が行うため無影響。
+   `@anthropic-ai/sandbox-runtime`（srt）で全プロセスをラップする案は、MCP の localhost HTTP が
+   プロキシ経由の制御下に入り direct-HTTP 構成（設計境界）と干渉するリスク + beta でスキーマ不安定
+2. **統合コスト最小** — `--settings` は既に spawn ごとに生成している。マージ1箇所 + SpawnContext に
+   フラグ1つで済み、新しい配線がない
+3. **プラットフォーム条件が単純** — Rhino は macOS/Windows のみ。サンドボックスは macOS（Seatbelt、
+   依存なし）対応・Windows ネイティブ非対応なので「macOS ではトグル、Windows は無効表示」の1分岐。
+   Linux の bubblewrap+socat 依存問題は考えなくてよい
+
+**守備範囲の明確化**: サンドボックスが守るのは**ファイルシステムとネットワーク**（Bash 経由）のみ。
+ユーザー最大の資産である Rhino ドキュメントは MCP 経由で操作され（claude 本体の接続 = sandbox 外）、
+その防御は従来どおりレイヤ規約（D7）と Rhino の Undo。UI 文言も「コマンド実行の隔離・
+Rhino モデル操作には影響しない」と効果ベースで書き、「サンドボックス = 全部安全」と誤読させない。
+
+**本命ユースケース**: オーケストレーション（D21/D22）で親が子タブの `--permission-mode` を緩和して
+走らせるとき、サンドボックスが実質唯一の安全層になる（「プロンプトで止まらない、かつ壊せる範囲は
+~/.corhino 内」の組み合わせ）。単独機能というより自律実行モードの土台。
+
+**トレードオフ / 残課題**: status hooks（echo → status ファイル）がサンドボックス対象かはドキュメント上
+不明確 — 対象でも `allowWrite: ~/.corhino` でカバーされる想定だが、実機で SessionStart → タブ
+インジケータの動作確認が要る。codex には独自の `--sandbox` フラグ体系があり未配線
+（`SpawnContext.SandboxEnabled` を CodexCli は無視 → roadmap）。

@@ -23,6 +23,10 @@ namespace CoRhino.Cli
     /// for this child (claude --permission-mode). Null — the common case, and always for
     /// user-created tabs — means the CLI's default. Vocabulary is validated at the
     /// command boundary (AgentCommands.TryParse).</param>
+    /// <param name="SandboxEnabled">The panel's sandbox setting at spawn time (already
+    /// gated on OS support by the caller). Claude maps it onto its built-in OS sandbox
+    /// via the --settings file; codex ignores it for now (its sandbox is a different
+    /// flag vocabulary — see roadmap).</param>
     internal sealed record SpawnContext(
         string AgentId,
         int HostPort,
@@ -31,7 +35,8 @@ namespace CoRhino.Cli
         bool Resume,
         string? LayerToken,
         DateTime SpawnedAtUtc,
-        string? PermissionMode = null);
+        string? PermissionMode = null,
+        bool SandboxEnabled = false);
 
     /// <summary>
     /// Adapter for one agent CLI (claude, codex, …). Owns every per-CLI concern

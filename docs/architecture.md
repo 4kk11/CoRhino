@@ -212,11 +212,17 @@ claude --strict-mcp-config --mcp-config <~/.corhino/runtime/mcp-<port>-<agentId>
 - `--plugin-dir <plugin dir>/cc-plugin` … CoRhino 同梱のオンボーディングスキル（`save-rhino-skill`：
   会話から `~/.corhino/skills` へ規約どおりスキルを書き出すメタスキル）。リポジトリの `cc-plugin/` を
   ビルドが assembly 隣へコピーする（web/ と同じ配送）。無ければ黙ってスキップ。
-- `--settings <path>` … spawn ごとに生成するステータスフック定義（`Workspace.EnsureClaudeStatusSettings`）。
-  `UserPromptSubmit`/`PreToolUse`/`PostToolUse` → busy、`Notification(permission_prompt)` → waiting、
-  `Stop`/`SessionEnd` → idle を `~/.corhino/runtime/status/<port>-<agentId>` に echo で書かせる
+- `--settings <path>` … spawn ごとに生成する settings ファイル（`Workspace.EnsureClaudeStatusSettings`）。
+  常にステータスフック定義を持つ: `UserPromptSubmit`/`PreToolUse`/`PostToolUse` → busy、
+  `Notification(permission_prompt)` → waiting、`Stop`/`SessionEnd` → idle を
+  `~/.corhino/runtime/status/<port>-<agentId>` に echo で書かせる
   （→ 2.3 ステータスインジケータの配線 / D20）。settings 経由のフックは信頼確認プロンプトが出ず、
-  `~/.claude` にも触れない。
+  `~/.claude` にも触れない。パネル設定（⚙ ドロワー）の**サンドボックスが ON** のときは
+  `sandbox` ブロックも同居する: claude 組み込みの OS サンドボックス（macOS Seatbelt）を有効化し、
+  Bash の書き込みを cwd + `~/.corhino`（オーケストレーションの drop-box・status・skills が cwd 外の
+  ~/.corhino 直下にあるため）に制限。`allowUnsandboxedCommands: true` で範囲外は通常の承認フローに
+  フォールバック、`failIfUnavailable: false` で非対応環境は従来動作に劣化（→ D25）。
+  spawn 時に `PanelSettings.Load()` を読むので、トグルの反映は**次に起動するタブから**。
 - `--session-id <GUID>` … 新規タブは spawn 時に C# が採番した ID を claude に固定させる。これでタブ⇄
   トランスクリプト（`~/.claude/projects/<cwd-slug>/<id>.jsonl`）の対応をパース無しで把握できる（→ D10）。
   resume タブは `--resume <id>`（`--fork-session` は付けない＝同じ jsonl が伸び続ける）。
@@ -477,14 +483,15 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
 
 ### 2.9 UI 層 — `ui/`（xterm.js）
 
-**責務**: WebView 内に**タブ式**の xterm.js ターミナル群と**2つのドロワー**（スキル一覧・セッション一覧）を
-描画し、キー入力を C# へ、PTY 出力を画面へ流す。エントリは `ui/src/main.ts`、ドロワーは
-`ui/src/skills-drawer.ts` / `ui/src/sessions-drawer.ts` に分離。
+**責務**: WebView 内に**タブ式**の xterm.js ターミナル群と**3つのドロワー**（スキル一覧・セッション一覧・
+設定）を描画し、キー入力を C# へ、PTY 出力を画面へ流す。エントリは `ui/src/main.ts`、ドロワーは
+`ui/src/skills-drawer.ts` / `ui/src/sessions-drawer.ts` / `ui/src/settings-drawer.ts` に分離。
 
 - **シェル構造**: `#terminal` を縦 flex にし、上に**タブバー** `#tabbar`（タブボタン群 + 「＋」 + 右端の
-  🕘 `#sessionsbtn` と ⚡ `#skillsbtn`）、下に横 flex の `#main`（ターミナル領域 `#terminals` + 右の
-  `#skillsdrawer` / `#sessionsdrawer`、各 260px 固定・閉時 `display:none`）を JS で構築。
-  **ドロワーは排他**——片方を開くともう片方は閉じる（`close()` API）。各タブ = 絶対配置の `.termpane`、
+  🕘 `#sessionsbtn`・⚡ `#skillsbtn`・⚙ `#settingsbtn`）、下に横 flex の `#main`（ターミナル領域
+  `#terminals` + 右の `#skillsdrawer` / `#sessionsdrawer` / `#settingsdrawer`、各 260px 固定・閉時
+  `display:none`）を JS で構築。
+  **ドロワーは排他**——1つを開くと他は閉じる（`close()` API）。各タブ = 絶対配置の `.termpane`、
   アクティブのみ表示。
 - **タブ管理**: `Map<agentId, Tab>`（`Tab = { agentId, sessionId, term, fit, pane, tabEl, labelEl, … }`）と `activeTab`。
   - `addTab(payload)` … pane + xterm を生成し、開いてアクティブ化。`onData`/`onResize` を **agentId 付き**で post。
@@ -509,7 +516,7 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
   `resize{agentId,cols,rows}` / `listSkills{agentId}` / `openSkill{path}` / `reloadSkills{agentId}` /
   `listSessions` / `resumeSession{sessionId}` / `renameSession{sessionId,name}` /
   `deleteSession{sessionId}` / `installCli{agentId}` / `recheckCli{agentId}` /
-  `openShellInTab{agentId}` / `debug`。
+  `openShellInTab{agentId}` / `getSettings` / `setSandbox{enabled}` / `debug`。
 - **受信窓口** `window.CoRhinoPanel`: C# 側が `ExecuteScriptAsync` で呼ぶ。
   - `onTabCreated({agentId, sessionId, label, customName, cli, background?})` → タブ＋xterm を生成しアクティブ化（cli バッジ付き）。
     `background: true`（オーケストレーション子タブ）はアクティブ化せず裏で作る — フォーカスは奪わず、
@@ -526,6 +533,7 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
   - `onTabLabel({agentId, label})` → 該当タブのラベル更新（リネーム確定・自動タイトル出現時）
   - `onTabStatus({agentId, sessionId, status})` → タブのステータスグリフ更新 + 未読判定、
     `sessionsDrawer.updateStatus(sessionId, status)` へ転送（live 行のグリフを再スキャンなしで更新）
+  - `onPanelSettings({sandboxEnabled, sandboxSupported})` → 設定ドロワーへ（getSettings 応答 / setSandbox エコー）
 - **Skills Drawer**（`skills-drawer.ts`）: ⚡ で開閉（開閉時にアクティブタブを `safeFit()`）。行 =
   状態ドット（`●` ロード済み / `⚠` 要 reload）+ name + 出所バッジ（自作/同梱）。クリックで description
   展開 + 「エディタで開く」（`openSkill`）。ヘッダ ⟳ = `reloadSkills`（C# が PTY へ
@@ -546,6 +554,12 @@ Rhino 起動中にインストールされた CLI も次の spawn から拾え�
   **spawn 産セッション**（payload の `spawnedBy` 非 null）は CLI バッジ横に `⧉` バッジ + サブ行に
   「↳ *親名* から spawn」（D24）。親名は同じ一覧から解決するので rename に自動追従、親が削除済みなら
   汎用文言にフォールバック。
+- **Settings Drawer**（`settings-drawer.ts`）: ⚙ で開閉（開時に `getSettings` を要求）。現在の項目は
+  **サンドボックス**トグルのみ（→ D25）。楽観描画しない — クリックは `setSandbox{enabled}` を post し、
+  スイッチの見た目はホストの `onPanelSettings` エコー（実際に保存された値）で更新する
+  （renameSession と同じ規律）。`sandboxSupported: false`（Windows）ではトグルを無効化し
+  「この OS では利用できません」の注記を出す。ON/OFF どちらでも「変更は新しいタブから」の注記を常設
+  （sandbox は spawn 時に固定され、実行中セッションには効かないため）。
 - xterm 設定: `convertEol: true`。Windows ConPTY の bare `\n` 階段化を `\r\n` 合成で吸収。
 - **synchronized update のフレーム組立（`writeSynced`）**: PTY 出力は `term.write` に直行せず、
   `CSI ?2026h … ?2026l`（DEC 2026）で括られた再描画フレームを完成まで溜めて **1 回の write** で渡す。
@@ -693,6 +707,8 @@ CoRhino は内部に4つの通信境界を持つ。バグはたいていこの�
 | `installCli` | `agentId` | セットアップ中タブのみ: `IAgentCli.NativeInstallCommand` をそのタブの PTY で実行（unix: `bash -lc` / win: `powershell -Command`）。exit で再プローブ → 成功なら同タブで CLI 起動、失敗なら `onCliSetup(failed)` |
 | `recheckCli` | `agentId` | セットアップ中タブのみ: BG 再プローブ → 成功なら同タブで CLI 起動＋`PushCliAvailability` 再送、失敗なら `onCliSetup(failed)` |
 | `openShellInTab` | `agentId` | セットアップ中タブのみ: ログインシェル（`bash -l` / `cmd.exe`）を明示起動（旧サイレントフォールバックの移設） |
+| `getSettings` | — | `PushPanelSettings()`（`PanelSettings.Load()` → `onPanelSettings`） |
+| `setSandbox` | `enabled` | `PanelSettings` を更新・保存（`~/.corhino/settings.json`）→ `onPanelSettings` エコー。反映は次 spawn から（→ D25） |
 | `debug` | `message` | `Log.Write("[Claude/UI] …")` |
 
 **C# → UI（`ExecuteScriptAsync` で `window.CoRhinoPanel` を呼ぶ）**
@@ -711,6 +727,7 @@ CoRhino は内部に4つの通信境界を持つ。バグはたいていこの�
 | `onSessionsList({sessions[]})` | セッションドロワーが開いていれば描画（タブ非依存）。listSessions への応答のほか、タブ生成/消滅・resume・rename 後にも push される |
 | `onTabLabel({agentId, label})` | 該当タブのラベルを更新（リネーム確定、スキャンで自動タイトルが判明したとき） |
 | `onTabStatus({agentId, sessionId, status})` | タブのステータスグリフ（✻ busy / ‼ waiting / idle は非表示）を更新し未読（✓）を判定。sessionId があればセッションドロワーの live 行にも転送（→ 2.3 ステータスインジケータの配線 / D20） |
+| `onPanelSettings({sandboxEnabled, sandboxSupported})` | 設定ドロワーの描画（getSettings 応答 / setSandbox エコー）。`sandboxSupported=false`（Windows）はトグルを無効表示 |
 
 ### 3.3 起動シーケンス（初回 `CoRhino` 実行）
 
@@ -961,6 +978,7 @@ runscript からポートを渡せず「不明なコマンド: <port>」が漏�
 | `~/.corhino/workspace/` | 全セッション共有の claude cwd（→ D11） |
 | `~/.corhino/workspace/CLAUDE.md` | セッション文脈（レイヤ値は持たない → D11）。初回 seed 後はユーザー所有 |
 | `~/.corhino/runtime/mcp-<port>-<agentId>.json` | rhino(http) サーバ定義。spawn 毎に上書き（ephemeral） |
+| `~/.corhino/settings.json` | ユーザー向けパネル設定（`sandboxEnabled`、`PanelSettings` が所有。→ D25） |
 | `~/.corhino/session-names.json` | ユーザーが付けたセッション名（`{sessionId: name}`、`SessionNames` が所有） |
 | `~/.corhino/session-parents.json` | spawn 産セッションの親子系譜（`{子sessionId: 親sessionId}`、`SessionParents` が所有。→ D24） |
 | `~/.claude/projects/<workspace-slug>/<sessionId>.jsonl` | claude 自身のトランスクリプト（CoRhino は読むだけ。Sessions Drawer の情報源） |
