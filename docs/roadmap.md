@@ -72,10 +72,13 @@ WIP / pre-alpha のため、ここの項目は予告なく増減・並び替え�
   rollout からのタイトル抽出（先頭プロンプト以上のもの）を検討
 - **初回タブ CLI の設定化 / 記憶**: 現状は常に claude（インタビューで決定）。codex 主体ユーザー向けに
   既定 CLI の設定 or 前回選択の記憶を検討
-- **codex のサンドボックス配線（D25 の続き）**: パネルのサンドボックス設定は現状 claude のみに効く
-  （`SpawnContext.SandboxEnabled` を CodexCli は無視）。codex は `--sandbox workspace-write` 等の
-  独自フラグ体系を持つので、同じトグルにマップするなら書き込み許可ディレクトリ（~/.corhino）の
-  指定方法と併せて別途設計が要る
+- **codex の writable_roots とオーケストレーション親問題（D25 の続き）**: codex タブは常時
+  `workspace-write` サンドボックスで、書き込みは cwd + `~/.corhino/skills` のみ（パネルの
+  サンドボックストグルは codex に配線**しない** — OFF は `-a never` 下の danger-full-access に
+  なるため。→ D25）。この範囲だと codex は drop-box（`~/.corhino/runtime/agent-commands`）に
+  書けず、orchestrate-agents スキルは見えるのに**オーケストレーションの親になれない**。
+  codex 親を許すなら CommandsDir（または `~/.corhino/runtime`）を writable_roots に足すだけだが、
+  それが望ましいか（claude 親限定で十分か）は未決
 - **`codex fork` / `archive` の UI 対応**: スコープ外とした操作。必要になったら Sessions Drawer に追加
 - **exec モードの MCP auto-cancel（upstream #24135）**: CoRhino は TUI 利用なので現状無関係だが、
   headless 用途（将来の自動化）を作る場合はこのバグの解消が前提

@@ -1277,7 +1277,16 @@ Rhino モデル操作には影響しない」と効果ベースで書き、「�
 走らせるとき、サンドボックスが実質唯一の安全層になる（「プロンプトで止まらない、かつ壊せる範囲は
 ~/.corhino 内」の組み合わせ）。単独機能というより自律実行モードの土台。
 
+**codex はトグルの対象外（意図的）**: codex タブは D14–D16 の時点から**常時サンドボックス**で
+動いている（`-s workspace-write` + `-a never` + `writable_roots=[~/.corhino/skills]` —
+CodexCli.BuildArgs）。「承認プロンプトを出さない代わりにサンドボックスで守る」という、
+本エントリが claude で目指した形を codex は最初から採っている。トグルを codex に配線すると
+OFF = `danger-full-access` を `-a never` と組み合わせた完全ノーガードになるため不採用。
+`SpawnContext.SandboxEnabled` を CodexCli が無視するのは手抜きではなく設計。
+なお両者の書き込み許可範囲は非対称（claude: `~/.corhino` 全体 / codex: cwd + skills のみ —
+codex は drop-box `runtime/agent-commands` に書けないため**オーケストレーションの親になれない**。
+→ roadmap）。
+
 **トレードオフ / 残課題**: status hooks（echo → status ファイル）がサンドボックス対象かはドキュメント上
 不明確 — 対象でも `allowWrite: ~/.corhino` でカバーされる想定だが、実機で SessionStart → タブ
-インジケータの動作確認が要る。codex には独自の `--sandbox` フラグ体系があり未配線
-（`SpawnContext.SandboxEnabled` を CodexCli は無視 → roadmap）。
+インジケータの動作確認が要る。

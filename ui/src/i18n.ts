@@ -58,7 +58,7 @@ const ja = {
   settingsBtn: '設定',
   settingsTitle: '設定',
   sandboxTitle: 'サンドボックス',
-  sandboxDesc: 'エージェントのコマンド実行を OS レベルで隔離し、ファイルの書き込み先を CoRhino ワークスペース内に制限します。範囲外の操作は通常の承認フローに戻ります。Rhino モデルの操作（MCP 経由）には影響しません。',
+  sandboxDesc: 'エージェントのコマンド実行を OS レベルで隔離し、ファイルの書き込み先を CoRhino ワークスペース内に制限します。範囲外の操作は通常の承認フローに戻ります。Rhino モデルの操作（MCP 経由）には影響しません。対象は Claude Code のタブのみ（Codex は常時サンドボックスで動作）。',
   sandboxAppliesToNewTabs: '変更は新しいタブから適用されます（実行中のセッションには影響しません）',
   sandboxUnsupported: 'この OS では利用できません（macOS のみ対応）',
 }
@@ -107,7 +107,7 @@ const en: typeof ja = {
   settingsBtn: 'Settings',
   settingsTitle: 'Settings',
   sandboxTitle: 'Sandbox',
-  sandboxDesc: "Isolates the agent's command execution at the OS level, confining file writes to the CoRhino workspace. Anything outside falls back to the normal approval flow. Rhino model operations (via MCP) are unaffected.",
+  sandboxDesc: "Isolates the agent's command execution at the OS level, confining file writes to the CoRhino workspace. Anything outside falls back to the normal approval flow. Rhino model operations (via MCP) are unaffected. Applies to Claude Code tabs only (Codex always runs sandboxed).",
   sandboxAppliesToNewTabs: 'Applies to new tabs (running sessions are unaffected)',
   sandboxUnsupported: 'Not available on this OS (macOS only)',
 }

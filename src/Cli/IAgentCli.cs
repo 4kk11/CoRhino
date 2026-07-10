@@ -25,8 +25,9 @@ namespace CoRhino.Cli
     /// command boundary (AgentCommands.TryParse).</param>
     /// <param name="SandboxEnabled">The panel's sandbox setting at spawn time (already
     /// gated on OS support by the caller). Claude maps it onto its built-in OS sandbox
-    /// via the --settings file; codex ignores it for now (its sandbox is a different
-    /// flag vocabulary — see roadmap).</param>
+    /// via the --settings file. Codex ignores it BY DESIGN: its tabs are always
+    /// sandboxed (-s workspace-write, paired with -a never — see CodexCli.BuildArgs),
+    /// and honoring OFF would mean danger-full-access under a never-ask policy.</param>
     internal sealed record SpawnContext(
         string AgentId,
         int HostPort,
