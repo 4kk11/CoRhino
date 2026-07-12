@@ -1,5 +1,9 @@
 # CoRhino
 
+<p align="center">
+  <img src="src/Resources/icon.png" alt="CoRhino" width="120">
+</p>
+
 Rhino に **AI コーディングエージェントをドックする** Rhino 8 プラグイン。サイドパネルに常駐した
 エージェント（Claude Code / Codex CLI、タブごとに選択）が、いま開いているその Rhino を操作できる。
 
