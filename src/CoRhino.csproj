@@ -23,37 +23,19 @@
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(OS)' == 'Unix'">
-    <RhinoResources>/Applications/Rhino 8.app/Contents/Frameworks/RhCore.framework/Versions/A/Resources</RhinoResources>
     <PluginDestDir>$(HOME)/Library/Application Support/McNeel/Rhinoceros/8.0/MacPlugIns/CoRhino</PluginDestDir>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(OS)' == 'Windows_NT'">
-    <RhinoResources>C:\Program Files\Rhino 8\System</RhinoResources>
     <PluginDestDir>$(APPDATA)\McNeel\Rhinoceros\myplugins\CoRhino</PluginDestDir>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Reference-only (ExcludeAssets=runtime): Rhino provides RhinoCommon at
-         runtime, so it must NOT be copied to the output — same effect as the old
-         HintPath's Private=false, but the version (= yak floor) is now pinned.
-         Eto/Rhino.UI stay on the local install: they don't affect the yak tag,
-         and the WebView APIs used here are long-standing Eto surface. -->
+    <!-- Reference-only (ExcludeAssets=runtime): Rhino provides these at runtime,
+         so they must NOT be copied to the output. The NuGet package ships
+         RhinoCommon.dll + Rhino.UI.dll + Eto.dll, so no local Rhino install is
+         needed to compile — this is what lets CI runners build the plugin. -->
     <PackageReference Include="RhinoCommon" Version="$(RhinoCommonVersion)" ExcludeAssets="runtime" />
-    <Reference Include="Eto">
-      <HintPath>$(RhinoResources)/Eto.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="Rhino.UI">
-      <HintPath>$(RhinoResources)/Rhino.UI.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-  </ItemGroup>
-
-  <ItemGroup Condition="'$(OS)' == 'Unix'">
-    <Reference Include="Microsoft.macOS">
-      <HintPath>$(RhinoResources)/Microsoft.macOS.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
   </ItemGroup>
 
   <ItemGroup>

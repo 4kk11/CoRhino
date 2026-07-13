@@ -1290,3 +1290,34 @@ codex は drop-box `runtime/agent-commands` に書けないため**オーケス�
 **トレードオフ / 残課題**: status hooks（echo → status ファイル）がサンドボックス対象かはドキュメント上
 不明確 — 対象でも `allowWrite: ~/.corhino` でカバーされる想定だが、実機で SessionStart → タブ
 インジケータの動作確認が要る。
+
+## D26: yak 配布は GitHub Actions で自動化 — push はタグ駆動・単一 linux ジョブに集約（2026-07-14）
+
+**決定**: `v*` タグの push をトリガーに、macos / windows ランナーで両 OS の `.yak` をビルドし、
+本番 yak サーバへ自動 push する（`.github/workflows/release.yml`）。`workflow_dispatch` は
+テストサーバ行きのリハーサル。認証は `yak login --ci` が発行する**非失効 API キー**を
+`YAK_TOKEN` Secret に置く（yak が環境変数から自動で読む）。
+
+**なぜこの形か**:
+
+- プラットフォームタグ（`-mac`/`-win`）は `yak build --platform` でパッケージ側に焼き込まれ、
+  push するマシンの OS は無関係。よって OS 別が必要なのは**ビルドだけ**で、push は
+  linux 1 ジョブに集約できる（yak はスタンドアロン linux バイナリが公式配布されている）。
+- 既存の公開 Action（crashcloud/yak-publish 等)は「ビルド出力を zip する」汎用型で、
+  CoRhino のパッケージング（vite 統合・lipo ユニバーサル化・ステージング除外）に合わない。
+  素の workflow から既存の `build-yak.sh` をそのまま呼ぶ。
+- バージョンの単一の真実は csproj の `<Version>` のまま。タグとの不一致は CI が fail させる
+  （bump 忘れのまま stale な版番号で出荷するのを防ぐ）。
+
+**付随変更**:
+
+- csproj: Eto / Rhino.UI のローカル Rhino インストール参照（HintPath）を撤去。NuGet の
+  RhinoCommon パッケージが RhinoCommon.dll + Rhino.UI.dll + Eto.dll を同梱しており
+  （nupkg を実際に展開して確認）、compile 参照はそれで賄える。これで **Rhino 未インストールの
+  CI ランナーでビルドが通る**。`Microsoft.macOS` 参照はソースに使用箇所がなく削除（警告ゼロ確認済み）。
+- build-yak.sh: ステージングを rsync → tar パイプに変更。Windows の Git Bash
+  （GitHub Actions ランナー含む）には rsync が無く、tar は両 OS にある。
+
+**トレードオフ / 残課題**: 片方のプラットフォームだけ push 成功して失敗した場合、
+リランは成功済み側の重複 push で fail する（yak サーバは同一版の再 push を拒否）。
+頻度が低い想定なので握りつぶさず、起きたら手動で片側だけ push して回復する。

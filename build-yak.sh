@@ -74,10 +74,10 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE"
 # Mirror the build output but drop debug symbols and macOS cruft. deps.json /
 # runtimeconfig.json are KEPT: CoreCLR needs them to resolve dependencies.
-rsync -a \
-  --exclude '*.pdb' \
-  --exclude '.DS_Store' \
-  "$BUILD_OUT"/ "$STAGE"/
+# tar (not rsync): Git Bash on Windows — including GitHub Actions runners —
+# ships tar but not rsync, and this must run on both OSes.
+tar -C "$BUILD_OUT" --exclude '*.pdb' --exclude '.DS_Store' -cf - . \
+  | tar -C "$STAGE" -xf -
 
 # --- 3. Drop in manifest + icon at the package root ---------------------------
 cp "$PROJ_DIR/yak/manifest.yml" "$STAGE/manifest.yml"

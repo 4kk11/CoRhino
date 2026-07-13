@@ -1,0 +1,102 @@
+# Build the per-OS yak packages and publish them to the Rhino package server.
+#
+# Triggers:
+#   - tag push `v*`      -> build mac + win, push both to PRODUCTION
+#   - workflow_dispatch  -> build mac + win, push to the TEST server (wiped
+#                           nightly) — a dry-run of the release pipeline
+#
+# The platform tag (-mac/-win) is baked into the .yak at build time, so only
+# the BUILD needs per-OS runners; pushing works from a single linux job.
+#
+# Auth: one-time setup — run `yak login --ci` locally (generates a
+# non-expiring API key) and store it as the YAK_TOKEN repository secret.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  YAK_TOOLS: https://files.mcneel.com/yak/tools/0.13.0
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            yak-path: mac/yak
+            yak-bin: yak
+          - os: windows-latest
+            yak-path: yak.exe
+            yak-bin: yak.exe
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      # The csproj <Version> is the single source of truth for the package
+      # version (build-yak.sh reads it). The tag must agree with it, so a
+      # forgotten version bump fails loudly instead of shipping a stale number.
+      - name: Check tag matches csproj <Version>
+        if: github.ref_type == 'tag'
+        run: |
+          csproj_ver="$(grep -oE '<Version>[^<]+</Version>' src/CoRhino.csproj | sed -E 's/<\/?Version>//g')"
+          tag_ver="${GITHUB_REF_NAME#v}"
+          if [[ "$csproj_ver" != "$tag_ver" ]]; then
+            echo "::error::tag v$tag_ver does not match csproj <Version> $csproj_ver — bump the csproj before tagging" >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Download yak CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/yak-cli"
+          curl -fsSL -o "$RUNNER_TEMP/yak-cli/${{ matrix.yak-bin }}" "$YAK_TOOLS/${{ matrix.yak-path }}"
+          chmod +x "$RUNNER_TEMP/yak-cli/${{ matrix.yak-bin }}"
+          echo "YAK=$RUNNER_TEMP/yak-cli/${{ matrix.yak-bin }}" >> "$GITHUB_ENV"
+
+      - name: Build yak package
+        run: ./build-yak.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yak-${{ runner.os }}
+          path: dist/yak/*.yak
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+
+      - name: Download yak CLI
+        run: |
+          curl -fsSL -o yak "$YAK_TOOLS/linux-x64/yak"
+          chmod +x yak
+
+      - name: Push packages
+        env:
+          YAK_TOKEN: ${{ secrets.YAK_TOKEN }}
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            source_args=()
+            echo ">> pushing to PRODUCTION"
+          else
+            source_args=(--source https://test.yak.rhino3d.com)
+            echo ">> pushing to TEST server"
+          fi
+          for f in packages/*.yak; do
+            echo ">> push $f"
+            ./yak push "${source_args[@]}" "$f"
+          done

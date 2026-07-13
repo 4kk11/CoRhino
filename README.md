@@ -252,7 +252,31 @@ make pack VERSION=0.1.0   # パッケージバージョンを明示指定
 - パッケージは **OS ごとに作る**（native pty ライブラリが OS 依存）。mac 用は macOS で、
   win 用は Windows（Git Bash / WSL）でそれぞれ `build-yak.sh` を実行する。
 - 生成物は `dist/yak/`（gitignore 対象）。manifest / icon は `yak/` にある。
-- 公開は `make yak-login` → `make yak-push-test`（テスト）→ `make yak-push`（本番）。
+- 手動公開は `make yak-login` → `make yak-push-test`（テスト）→ `make yak-push`（本番）。
+
+### リリース自動化（GitHub Actions）
+
+通常のリリースは CI に任せる（[.github/workflows/release.yml](.github/workflows/release.yml)）。
+
+- **`v*` タグを push** → macos / windows ランナーで両 OS の `.yak` をビルドし、**本番サーバへ push**。
+  タグと csproj の `<Version>` が一致しないと fail する（バージョンの単一の真実は csproj のまま）。
+- **workflow_dispatch（手動実行）** → 同じビルドを **テストサーバ**（毎晩ワイプ）へ push。
+  リリースパイプラインのリハーサル用。
+
+```bash
+# リリース手順: csproj の <Version> を上げてコミット → タグを push するだけ
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+仕組み上のポイント:
+
+- プラットフォームタグ（`-mac`/`-win`）は `yak build --platform` で**パッケージに焼き込まれる**ので、
+  push 自体は 1 つの linux ジョブに集約できる（ビルドだけ OS 別ランナーが必要）。
+- yak CLI は[スタンドアロン配布](https://files.mcneel.com/yak/tools/0.13.0/)を使うため、ランナーに Rhino のインストールは不要。
+  コンパイル参照（RhinoCommon / Rhino.UI / Eto）も NuGet の RhinoCommon パッケージが供給する。
+- **初回セットアップ（一度だけ）**: 手元で `yak login --ci` を実行すると**失効しない** API キーが
+  発行されるので、リポジトリの Secrets に `YAK_TOKEN` として登録する（yak は環境変数
+  `YAK_TOKEN` から自動で読む）。通常の `yak login` のトークンは約 30 日で切れるので CI には使わない。
 
 ### 対応 Rhino 最小バージョン（配布タグ）
 
