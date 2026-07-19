@@ -14,7 +14,9 @@ CoRhino はその**パネル UX・起動配線・オンボーディング**だ�
 
 
 
-https://github.com/user-attachments/assets/824f03e8-8070-4911-a21d-9be97cdc1bc3
+https://github.com/user-attachments/assets/661a35e1-c61b-4d1d-92d9-56ed656b872f
+
+
 
 
 
