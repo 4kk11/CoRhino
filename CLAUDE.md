@@ -24,7 +24,7 @@ PTY で `claude` を起動し、公式 Rhino-MCP-Platform のホストに direct
 
 - Build（UI ビルド統合済み・これ一発で完結）: `make build`（= `dotnet build src/CoRhino.csproj`）
 - UI 単体開発: `make ui-dev`（`CORHINO_WEBUI_URL=http://localhost:5173` をセットして Rhino 起動）
-- yak パッケージ: `make pack` → `make yak-push`（配布の詳細は README「配布」節）
+- yak パッケージ: `make pack` → `make yak-push`（配布の詳細は README「Packaging (yak)」「Release automation」節）
 
 ## 設計境界（崩さない）
 
@@ -40,7 +40,7 @@ PTY で `claude` を起動し、公式 Rhino-MCP-Platform のホストに direct
 
 ソースを変えたら同じ作業内で関連ドキュメントを更新する。
 
-- CLI/コマンド・配線・要件の変更 → `README.md`
+- CLI/コマンド・配線・要件の変更 → `README.md`（英語）と `README.ja.md`（日本語）。**両方を同内容に保つ**
 - アーキテクチャ（現在の構造・how）→ `docs/architecture.md`
 - xterm⇄PTY 入出力フローの細部 → `docs/details/io-flow-xterm-pty.md`（深掘り資料は `docs/details/` に置く）
 - 設計判断・検証履歴・バグ記録（なぜ・過去）→ `docs/design-history.md`

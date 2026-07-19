@@ -4,290 +4,191 @@
   <img src="src/Resources/icon.png" alt="CoRhino" width="120">
 </p>
 
-Rhino に **AI コーディングエージェントをドックする** Rhino 8 プラグイン。サイドパネルに常駐した
-エージェント（Claude Code / Codex CLI、タブごとに選択）が、いま開いているその Rhino を操作できる。
+<p align="center">
+  English | <a href="README.ja.md">日本語</a>
+</p>
 
-非エンジニアでも「パネルを開くだけ」で使えることを目標にしており、`MCPConnect` /
-設定ファイルの貼り付け / 手動の MCP 起動を一切踏ませない。Rhino 操作の実体（tools /
-agents）は公式 [Rhino-MCP-Platform](https://github.com/mcneel/RhinoMCP) に乗り、
-CoRhino はその**パネル UX・起動配線・オンボーディング**だけを担う（ツールは持たない）。
+A Rhino 8 plugin that **docks an AI coding agent into Rhino**. Agents (Claude Code / Codex CLI, selectable per tab) live in a side panel and operate the very Rhino instance they are docked in.
 
-
+The goal is that non-engineers can use it by just opening the panel — no `MCPConnect`, no config-file pasting, no manual MCP setup. All Rhino tools/agents live in the official [Rhino-MCP-Platform](https://github.com/mcneel/RhinoMCP); CoRhino only provides the **panel UX, launch wiring, and onboarding** (it ships no tools of its own).
 
 https://github.com/user-attachments/assets/661a35e1-c61b-4d1d-92d9-56ed656b872f
 
-
-
-
-
 > [!WARNING]
-> Pre-alpha / WIP。CLI・プロトコル・handler 名は予告なく変わる。
-## 仕組み
+> Pre-alpha / WIP. Commands, protocol, and configuration may change without notice.
+
+## How it works
 
 ```
-Rhino プロセス
-├── CoRhino プラグイン (.rhp, C#)
-│   ├── "CoRhino" コマンド → サイドパネルを開く
-│   └── パネル = WebView + xterm.js (タブ式) に PTY 経由のエージェント CLI を表示
-│        ├─ インスタンス専用ポートを採番 (base 10500)
-│        ├─ RhinoMCP ホストを MCPSpawn でそのポートに起動 (1パネル=1ホスト)
-│        └─ タブごと (= エージェント) に claude / codex を並列起動（＋メニューで選択）
-│             ├─ 共有ワークスペース ~/.corhino/workspace/ を cwd に (CLAUDE.md / AGENTS.md)
-│             ├─ claude: ~/.corhino/runtime/ のタブ専用 .mcp.json / codex: -c オーバーライド注入
-│             ├─ スキル: claude は --plugin-dir、codex は workspace/.agents/skills (symlink) でロード
-│             └─ 全タブが同じ http://localhost:<port>/ に接続 (同じ doc を操作)
-└── Rhino-MCP-Platform プラグイン (.rhp)
-     └── http://localhost:<port>/ で MCP ホストを提供
+Rhino process
+├── CoRhino plugin (.rhp)
+│    └── side panel = WebView + xterm.js tabs
+│         └── each tab runs an agent CLI (claude / codex) via PTY
+│              └── MCP over direct HTTP → http://localhost:<port>/
+└── Rhino-MCP-Platform plugin (.rhp)
+     └── MCP host serving Rhino tools at http://localhost:<port>/
 ```
 
-- **direct-HTTP 接続**: 各エージェントは `http://localhost:<port>/` の `rhino` MCP サーバに
-  直接つながる。node router は使わない（パネルの意味論は「ドックされた“この”Rhino を操作」）。
-- **インスタンス単位のポート**: パネルごとに空きポートを採番するので、複数ドキュメントでも
-  各パネルが自分の Rhino を操作する。
-- **1 ドキュメントに複数エージェント（並列・CLI 混在可）**: 1パネル内のタブを「＋」で増やすと、
-  複数のエージェント（claude / codex 混在可）が同じ Rhino を並列に操作する。RhinoMCP ホストはステートレスでツール実行を
-  UI スレッドで直列化するため安全。各セッションには専用レイヤ（`s-XXXXXXXX/`）が割り当てられ、
-  書き込みが衝突しないようになっている（再開しても同じレイヤに戻る）。
-- **セッション隔離**: claude は `--strict-mcp-config --mcp-config <runtime>/.mcp.json` で起動し、
-  ユーザーのグローバル/プロジェクト MCP 設定を読み込まない。`~/.claude` を汚さない。codex は
-  `--disable plugins` + 既存 MCP サーバの `enabled=false` + `rhino` サーバ追加を `-c` オーバーライドで
-  spawn 時にのみ注入する。`~/.codex/config.toml`・auth はいずれも無変更（再ログイン不要）。codex は
-  `-a never -s workspace-write` で起動し、シェルコマンドの承認プロンプトなしに動く
-  （サンドボックスは有効のまま。書き込みは workspace と tmp に限定）。
-- **ユーザー自作スキル**: `~/.corhino/skills/`（初回起動時に骨格を自動生成）を `--plugin-dir` で
-  全セッションに読み込む。パネル内の claude に「今の手順をスキルにして」と頼むと、同梱の
-  `save-rhino-skill` メタスキルが規約どおり `skills/<name>/SKILL.md` を書き出す（手で置いてもよい。
-  書き方は seed される `~/.corhino/skills/README.md` を参照）。全パネル・全タブに載り、
-  実行中セッションへの反映は `/plugin reload-plugins`。
-- **スキル一覧ドロワー**: タブバー右端の ⚡ で、溜まったスキルの一覧（自作/同梱バッジ・説明）を
-  ターミナル横に表示する。保存直後のスキルはライブで現れ、未反映なら ⚠ が付く。「エディタで開く」で
-  SKILL.md を直接編集。自作スキルは claude / codex 両方のセッションに載る（同一の `~/.corhino/skills`
-  を共有。codex へは workspace の `.agents/skills` symlink 経由）。反映方法は CLI で異なる —
-  claude タブはヘッダの ⟳ 一発でアクティブなセッションに反映、codex は実行中セッションへの再読込が
-  できないため ⟳ が消え、⚠ は「新しいタブから有効」表示になる。同梱スキル（save-rhino-skill）も
-  両 CLI に載る（codex へは workspace の `.codex/skills` symlink 経由）。
-- **セッション管理**: 会話は CLI が自動保存しており、タブバー右端の 🕘 で過去セッションを一覧・
-  ワンクリック再開できる（タイトルは自動生成、日時つき。開いているセッション以外は
-  いつでも再開可能）。タブラベルのダブルクリック（または一覧の ✎）で名前を付けられ、名前は
-  再開後も引き継がれる。不要になったセッションは一覧の 🗑（2度押しで確定）で削除できる。全セッションが共有ワークスペース（`~/.corhino/workspace/`）で動くので、
-  Rhino を再起動しても履歴が繋がる。claude / codex 両方のセッションが CLI バッジ付きで 1 つの
-  タイムラインに並び、クリックすれば該当 CLI で再開される（codex の削除は索引の整合のため
-  `codex delete --force` 経由）。
-- **言語**: パネル UI・ダイアログ・生成されるテンプレート（CLAUDE.md 等）は Rhino の言語設定に
-  追従する（日本語 Rhino なら日本語、それ以外は英語）。
-- **MCP ホスト起動**: `RHINO_MCP_AUTOSTART_PORT` をセットして hidden コマンド `_-MCPSpawn`
-  を実行する（`MCPStart` の対話的ポート入力は runscript と相性が悪いため使わない）。
+- Each panel gets its **own port** (base 10500), so with multiple documents each panel controls its own Rhino.
+- Agents connect to the Rhino-MCP-Platform host via **direct HTTP** — no node router in between.
+- Agent sessions are **isolated**: per-tab MCP config is injected at launch; your `~/.claude` and `~/.codex` stay untouched (no re-login needed).
 
-## 必要環境
+## Requirements
 
-- **Rhino 8**（macOS: Apple Silicon / Intel、Windows）
-- **[Claude Code](https://claude.com/claude-code) CLI** (`claude`) が PATH 上にあること
-  - 見つからない場合はタブ内にセットアップビューが出る: 公式ネイティブインストーラ
-    （macOS/Linux: `curl -fsSL https://claude.ai/install.sh | bash`）をボタン一つで実行でき、
-    完了すると同じタブで CLI が起動する（手動導入後の「再チェック」、明示的な「シェルを開く」も可）
-- （任意）**[Codex CLI](https://developers.openai.com/codex/cli)** (`codex`) — あれば ＋メニューから
-  codex タブを起動できる。無ければメニューでグレーアウトされるだけで claude 側に影響はない
-  （codex のセットアップビューは `curl -fsSL https://chatgpt.com/codex/install.sh | sh` を案内する）
-  - **0.142 以降が必要**: Sessions Drawer からの削除は `codex delete`（0.142 で追加）に、
-    タブのステータス表示はフックシステム + `--dangerously-bypass-hook-trust`（同時期に追加）に
-    依存する。**フック未対応の古い codex は未知フラグで codex タブの起動自体が失敗する**
-    （`codex update` で解消）
-- **Rhino-MCP-Platform**（yak パッケージ）
-  - 未導入ならパネルが検出し、同意ダイアログ → `yak install` → 再起動案内まで自動で行う
+- **Rhino 8.32 or later** — macOS (Apple Silicon) is the recommended platform; Intel Mac and Windows also work
+- **[Claude Code](https://claude.com/claude-code) CLI** (`claude`) on your PATH
+  - If missing, the tab shows a setup view that runs the official installer with one click
+- (Optional) **[Codex CLI](https://developers.openai.com/codex/cli)** (`codex`) **0.142 or later** — enables codex tabs in the "+" menu; grayed out if absent, with no effect on claude tabs
+  - Older versions fail to launch codex tabs (unknown hook flags) — fix with `codex update`
+- **Rhino-MCP-Platform** (yak package) — if missing, the panel detects it and handles consent → install → restart guidance automatically
 
-## ビルド
+## Installation
 
-UI（vite）のビルドは .NET ビルドに統合済み。**`dotnet build` 一発**で完結する。
+Install from the Rhino Package Manager:
+
+1. In Rhino, run `_PackageManager` (Tools ▸ Package Manager)
+2. Check **"Include pre-releases"** (CoRhino is currently in beta)
+3. Search for **CoRhino** and install
+4. Restart Rhino
+
+To build from source instead, see [For developers](#for-developers).
+
+## Usage
+
+1. Run the `CoRhino` command → the side panel opens
+2. First run: if Rhino-MCP-Platform is missing, a consent dialog installs it → restart Rhino
+3. Ask the agent things like *"What's in the current document?"*
+
+Typing `/exit` (or `Ctrl-D`) in a tab shuts down that agent and closes the tab; when the last tab exits, the panel closes too. Running `CoRhino` again reopens the panel with a fresh session (the instance's MCP host and port are reused). If the panel is already open, `CoRhino` just brings it to the front.
+
+The panel UI, dialogs, and generated templates follow Rhino's language setting (Japanese Rhino → Japanese; otherwise English).
+
+## Features
+
+### Parallel agents (tabs)
+
+"+" on the tab bar launches another agent (claude / codex, mixable) against the **same Rhino document**. Each tab is an independent session with a dedicated layer prefix (`s-XXXXXXXX/`): agents write only under their own layer and treat other layers as read-only, so parallel work (e.g. one generating geometry, one analyzing) rarely collides. "×" on a tab terminates just that agent.
+
+Status glyphs next to the CLI badge (● claude / ◆ codex) show each tab's state without opening it: `✻` (amber, spinning) = working, `‼` (red, blinking) = **waiting for approval**, `✓` (green) = finished while inactive, unread; nothing when idle.
+
+> Note: layer separation is a **convention** enforced via CLAUDE.md / AGENTS.md, not by the host. Touching the same object across layers can still conflict logically, and agents don't see each other's changes in real time.
+
+### Session management (🕘)
+
+Conversations are auto-saved by the CLI. The 🕘 drawer lists past sessions (auto-titled, timestamped) for one-click resume, renaming (double-click the tab label, or ✎), and deletion (🗑, press twice to confirm). All sessions share the same workspace (`~/.corhino/workspace/`), so history survives Rhino restarts. claude and codex sessions appear in one timeline with CLI badges and resume in the matching CLI.
+
+### Custom skills (⚡)
+
+Your own skills live in `~/.corhino/skills/` (a skeleton is seeded on first launch, with a README explaining the format) and load into every session of **both CLIs**. Ask the in-panel Claude "turn what we just did into a skill" and the bundled `save-rhino-skill` meta-skill writes `skills/<name>/SKILL.md` for you (writing it by hand also works).
+
+The ⚡ drawer lists all skills (custom/bundled badges, descriptions) next to the terminal. Newly saved skills appear live; ⚠ marks those not yet active in a session — claude tabs reload them with the ⟳ button in the header, codex tabs pick them up from the next tab (running codex sessions can't reload).
+
+### Agent orchestration
+
+An agent can **spawn child tabs and delegate work to them**. Ask "hand this off to another agent" and the bundled `orchestrate-agents` skill spawns a child tab, sends instructions, detects completion, collects the result, and closes the child.
+
+- No extra approval dialog — the Bash execution that drives spawning is already gated by the parent agent's permission mode. New tabs and Rhino command-line notifications make spawns visible (with a warning if a permissive mode like `acceptEdits` was requested).
+- An agent can only control **tabs it created**; user-opened tabs are off-limits.
+- Children spawn in the background without stealing focus; progress shows via the tab status glyphs.
+- Spawned sessions carry a `⧉` badge ("↳ spawned by …") in the 🕘 drawer.
+- Max 8 tabs total; children are Claude Code only in V1.
+
+### Settings (⚙) — sandbox
+
+The ⚙ drawer holds a **sandbox** toggle (saved to `~/.corhino/settings.json`, default OFF). When ON, agent shell commands run OS-sandboxed with file writes confined to `~/.corhino`; legitimate operations outside just fall back to the normal approval flow. **Rhino model operations via MCP are unaffected** — the model is still protected by the layer convention and Undo.
+
+- Applies to **new tabs** only (not running sessions)
+- **macOS only** (uses Claude Code's built-in Seatbelt sandbox; the toggle is disabled on Windows)
+- **Claude Code tabs only** — codex tabs are always sandboxed by design (`workspace-write`, paired with no approval prompts) and are not affected by the toggle
+
+## For developers
+
+### Build
+
+The UI (vite) build is integrated into the .NET build — one command does everything:
 
 ```bash
-dotnet build src/CoRhino.csproj
+make build     # = dotnet build src/CoRhino.csproj
 ```
 
-- `BuildUi` ターゲットが `ui/` で `npm install`（初回のみ）+ `npm run build` を実行
-- ビルド成果物を `web/` として `.rhp` の隣に配置し、PostBuild が Rhino の
-  plugin ディレクトリ（macOS: `~/Library/Application Support/McNeel/Rhinoceros/8.0/MacPlugIns/CoRhino`）へコピー
-- macOS は arm64/x64 の native dylib を `lipo` でユニバーサル化して同梱
+- The `BuildUi` target runs `npm install` (first time only) + `npm run build` in `ui/`
+- Output lands next to the `.rhp` as `web/`, then PostBuild copies everything to the Rhino plugin dir (macOS: `~/Library/Application Support/McNeel/Rhinoceros/8.0/MacPlugIns/CoRhino`)
+- macOS bundles a universal (arm64/x64) native dylib via `lipo` — shipping only one architecture breaks `dlopen`
 
-> コピー先（plugin ディレクトリ）を直接編集しないこと。常に再ビルドで反映する。
+> Never edit the copied plugin dir directly; always rebuild.
 
-## 使い方
+### Development commands
 
-1. プラグインをビルド（上記）して Rhino を起動／再起動する
-2. Rhino のコマンドラインで `CoRhino` を実行 → サイドパネルが開く
-3. 初回、Rhino-MCP-Platform が無ければ導入の同意ダイアログが出る → インストール後に Rhino 再起動
-4. パネル内の Claude Code に「今のドキュメントに何がある？」のように指示する
+Everything is collected in the `Makefile` (`make help` for the list).
 
-### 並列エージェント（タブ）
-
-タブバーの「＋」で CLI（Claude Code / Codex）を選び、**同じ Rhino ドキュメントに対して
-エージェントをもう1つ**起動できる。タブには CLI バッジ（● claude / ◆ codex）が付く。各タブは
-独立したセッション（別履歴）で、セッションごとの専用レイヤ接頭辞（`s-XXXXXXXX/`）が
-割り当てられる。各エージェントは自分のレイヤ配下にだけ書き込み、他レイヤは読み取りのみとする
-規約で動くので、並列で別々の作業（例: 片方がジオメトリ生成、片方が解析）を進めても衝突しにくい。
-タブの「×」でそのエージェントだけ終了できる。
-
-各タブの CLI バッジの隣には**ステータスグリフ**が付き、エージェントの状態がタブを開かずに分かる:
-`✻`（アンバー・回転）= 稼働中、`‼`（赤・点滅）= **承認待ち**（ツール実行の許可待ちで停止中）、
-待機中は何も表示されない。非アクティブのタブが作業を終えると、開くまで `✓`（緑・完了未読）が残る。
-セッション一覧（🕘）の実行中の行にも同じ状態が表示される。
-
-> 注意: レイヤ分離は CLAUDE.md / AGENTS.md による**規約**であり、ホストが強制するわけではない。同じオブジェクトを
-> 跨いで触ると論理衝突し得る。また各エージェントは互いの変更をリアルタイムには知らない（最新状態は
-> 都度問い合わせる）。
-
-### エージェントオーケストレーション（エージェントが子タブを操る）
-
-タブ内のエージェント自身が、**別のエージェントのタブを作成して作業を委譲**できる。
-「この作業を別のエージェントに任せて」のように頼むと、エージェントは同梱スキル
-`orchestrate-agents` の手順で子タブを spawn し、指示を送り、完了を検知して成果を回収し、
-終わった子タブを閉じる。
-
-- **承認ダイアログは出ない**。コマンドファイルを書く Bash 実行自体が親エージェントの
-  権限モードで既にゲートされており、二重の承認は待ち時間にしかならないため（→ design-history D22）。
-  子タブが作られると新しいタブが現れ、Rhino コマンドラインにも通知が出る
-- 子タブの権限モード（例: `acceptEdits` = 編集を承認なしで実行）が指定された場合は、
-  コマンドライン通知に警告付きで表示される
-- エージェントが操作できるのは**自分が作った子タブだけ**。ユーザーが開いたタブには触れない
-- 子タブは**フォーカスを奪わず背景で作られる**。進行状況はタブのステータスドット
-  （稼働中 → 完了で未読の緑）で分かり、見たくなったらクリックで開く
-- spawn で生まれたセッションは履歴一覧（🕘）で `⧉` バッジと「↳ 親名 から spawn」付きで
-  表示され、あとからでも見分けられる
-- タブ総数は 8 個まで。V1 で spawn できる子は Claude Code のみ
-
-### セッションの終了と再起動
-
-パネル内で `/exit`（または `Ctrl-D` 等）で Claude Code を終了すると、そのタブの PTY とプロセスが
-後始末され、タブが閉じる。**最後のタブが終了するとパネルも自動で閉じる**。もう一度 `CoRhino`
-コマンドを実行すると、パネルが再び開き、**新しい Claude セッションが起動する**（このインスタンスの
-MCP ホスト・ポートはそのまま再利用される）。セッションが生きている間に `CoRhino` を実行した
-場合はパネルが前面に来るだけ。
-
-### 設定（⚙）— サンドボックス
-
-タブバー右端の ⚙ で設定ドロワーが開く。現在の項目は**サンドボックス**の ON/OFF
-（`~/.corhino/settings.json` に保存、デフォルト OFF）。
-
-ON にすると、エージェントのコマンド実行（Bash）が OS レベルで隔離され、ファイルの書き込み先が
-CoRhino ワークスペース（`~/.corhino`）内に制限される。範囲外への正当な操作は通常の
-承認フローに戻るだけで、機能が使えなくなるわけではない。**Rhino モデルの操作（MCP 経由）には
-影響しない**——モデルの保護は従来どおりレイヤ規約と Undo が担う。
-
-- 変更は**新しいタブから**適用される（実行中のセッションには効かない）
-- **macOS のみ対応**（claude 組み込みサンドボックス = Seatbelt。Windows ではトグルが無効表示になる）
-- このトグルの対象は **Claude Code タブのみ**。Codex タブは設計として**常時サンドボックス**
-  （`workspace-write`、承認プロンプトなしとペア）で動いており、トグルでは切り替わらない
-
-## プロジェクト構成
-
-```
-src/                        C# Rhino プラグイン
-├── CoRhinoPlugin.cs        プラグイン本体（起動時ロード、パネル登録）
-├── Commands/               "CoRhino" コマンド（パネルを開く）
-├── Panel/
-│   ├── CoRhinoPanel.cs     WebView + xterm.js (タブ式)、ポート採番、複数エージェント起動、MCP ホスト起動
-│   ├── AgentCommands.cs    オーケストレーションのコマンドファイル・プロトコル（パース/検証/レスポンス）
-│   ├── SkillsCatalog.cs    スキル一覧ドロワーのデータ層（スキャン + frontmatter パース）
-│   ├── SessionsCatalog.cs  セッション一覧ドロワーのデータ層（~/.claude/projects のトランスクリプトスキャン）
-│   ├── SessionNames.cs     ユーザーが付けたセッション名の永続化（~/.corhino/session-names.json）
-│   ├── SessionLayers.cs    codex セッション ID → レイヤの永続化（~/.corhino/session-layers.json）
-│   ├── PanelSettings.cs    パネル設定の永続化（~/.corhino/settings.json — サンドボックス ON/OFF）
-│   ├── Workspace.cs        ~/.corhino/workspace/（共有 cwd + CLAUDE.md/AGENTS.md）と runtime/ の .mcp.json、
-│   │                       ~/.corhino/skills/（ユーザースキル plugin 骨格）の seed
-│   └── RhinoMcpInstaller.cs  Rhino-MCP-Platform の yak オンボーディング
-├── Cli/                    CLI アダプタ層（IAgentCli / ClaudeCli / CodexCli — 起動引数・隔離・ID 発見）
-├── Pty/                    PTY セッション（Porta.Pty）と CLI 解決
-└── Resources/icon.png      パネルアイコン
-cc-plugin/                  同梱 Claude Code プラグイン（save-rhino-skill / orchestrate-agents）
-ui/                         パネル UI（TypeScript + xterm.js, vite）
-docs/                       設計・アーキテクチャ・ロードマップ（下記）
-yak/                        Rhino パッケージマネージャ用 manifest.yml + icon.png
-build-yak.sh                yak パッケージ（.yak）を組み立てるスクリプト（下記「配布」）
-Makefile                    主要コマンドの集約（make help で一覧）
-```
-
-## ドキュメント
-
-役割を1ファイル1責務で分けている。
-
-| ファイル | 責務（何が書いてあるか） |
+| target | what it does |
 |---|---|
-| [`docs/architecture.md`](docs/architecture.md) | **現在の構造**（how）。コンポーネント・データフロー・ライフサイクル・設定リファレンス |
-| [`docs/details/io-flow-xterm-pty.md`](docs/details/io-flow-xterm-pty.md) | xterm ⇄ PTY の入出力フローのコード単位の深掘り（`docs/details/` は深掘り資料置き場） |
-| [`docs/design-history.md`](docs/design-history.md) | **なぜこの形か**（why）。設計判断・検証ログ・直したバグ |
-| [`docs/roadmap.md`](docs/roadmap.md) | **これから**（未来）。未実装・今後の作業 |
+| `make build` / `make release` | Debug / Release build (UI build + native flatten + install to plugin dir) |
+| `make ui-dev` / `make ui-build` | vite dev server / UI-only build |
+| `make pack` | Release build + yak package into `dist/yak/` (`make pack VERSION=0.1.0` to pin) |
+| `make yak-login` / `make yak-push-test` / `make yak-push` | yak auth / push to test / production server |
+| `make clean` / `make uninstall` | remove build outputs / remove installed plugin |
 
-## 開発
-
-主要コマンドは `Makefile` に集約している（`make` または `make help` で一覧）。
-
-| target | 内容 |
-|---|---|
-| `make build` / `make release` | Debug / Release ビルド（UI ビルド + native flatten + plugin dir へインストールまで込み） |
-| `make ui-dev` / `make ui-build` | vite dev サーバ / UI 単体ビルド |
-| `make pack` | Release ビルド + yak パッケージ生成（`dist/yak/`）。`make pack VERSION=0.1.0` で版指定 |
-| `make yak-login` / `make yak-push-test` / `make yak-push` | yak 認証 / テスト・本番サーバへ push |
-| `make clean` / `make uninstall` | ビルド成果物削除 / インストール済みプラグイン削除 |
-
-UI を vite dev サーバから読ませる場合は、Rhino 起動前に環境変数を設定する:
+To serve the UI from the vite dev server, set this before launching Rhino (while `make ui-dev` is running):
 
 ```bash
-export CORHINO_WEBUI_URL=http://localhost:5173   # `make ui-dev` 実行中
+export CORHINO_WEBUI_URL=http://localhost:5173
 ```
 
-設定時はパネルがディスク上の `web/index.html` ではなく dev サーバの URL を読む。
+The panel then loads the dev server URL instead of the on-disk `web/index.html`.
 
-各ドキュメントの詳細は上記「ドキュメント」を参照。
+### Project structure
 
-## 配布（Rhino パッケージマネージャ / yak）
-
-Rhino の Package Manager（`_PackageManager` / Tools ▸ Package Manager）からインストールできる
-`.yak` パッケージを作る。ビルド出力（`.rhp` + 依存一式）をそのまま同梱するので、ローカルの
-実動インストールと同じファイル集合になる。
-
-```bash
-make pack                 # Release ビルド → dist/yak/corhino-<ver>-rh8_32-<os>.yak
-make pack VERSION=0.1.0   # パッケージバージョンを明示指定
+```
+src/            C# Rhino plugin
+├── Panel/      panel orchestrator, drawers, orchestration protocol, workspace/settings persistence
+├── Cli/        CLI adapter layer (IAgentCli / ClaudeCli / CodexCli — args, isolation, ID discovery)
+├── Pty/        PTY sessions (Porta.Pty) + CLI resolution
+└── Commands/   the "CoRhino" command (opens the panel)
+cc-plugin/      bundled Claude Code plugin (save-rhino-skill / orchestrate-agents)
+ui/             panel UI (TypeScript + xterm.js, vite)
+yak/            package manifest.yml + icon
+build-yak.sh    assembles the .yak package
+Makefile        main commands (make help)
 ```
 
-（`make pack` は `build-yak.sh` を呼ぶだけ。スクリプトを直接叩いても同じ。）
+### Packaging (yak)
 
-- パッケージは **OS ごとに作る**（native pty ライブラリが OS 依存）。mac 用は macOS で、
-  win 用は Windows（Git Bash / WSL）でそれぞれ `build-yak.sh` を実行する。
-- 生成物は `dist/yak/`（gitignore 対象）。manifest / icon は `yak/` にある。
-- 手動公開は `make yak-login` → `make yak-push-test`（テスト）→ `make yak-push`（本番）。
-
-### リリース自動化（GitHub Actions）
-
-通常のリリースは CI に任せる（[.github/workflows/release.yml](.github/workflows/release.yml)）。
-
-- **`v*` タグを push** → macos / windows ランナーで両 OS の `.yak` をビルドし、**本番サーバへ push**。
-  タグと csproj の `<Version>` が一致しないと fail する（バージョンの単一の真実は csproj のまま）。
-- **workflow_dispatch（手動実行）** → 同じビルドを **テストサーバ**（毎晩ワイプ）へ push。
-  リリースパイプラインのリハーサル用。
+The `.yak` package bundles the build output (`.rhp` + all dependencies) — the same file set as a local working install.
 
 ```bash
-# リリース手順: csproj の <Version> を上げてコミット → タグを push するだけ
+make pack                 # Release build → dist/yak/corhino-<ver>-rh8_32-<os>.yak
+make pack VERSION=0.1.0   # pin the package version
+```
+
+(`make pack` just calls `build-yak.sh`; running the script directly is equivalent.)
+
+- Packages are **per-OS** (the native PTY library is OS-specific): build the mac package on macOS and the win package on Windows (Git Bash / WSL).
+- Output goes to `dist/yak/` (gitignored); manifest and icon live in `yak/`.
+- Manual publish: `make yak-login` → `make yak-push-test` (test) → `make yak-push` (production).
+
+### Release automation (GitHub Actions)
+
+Normal releases are handled by CI ([.github/workflows/release.yml](.github/workflows/release.yml)).
+
+- **Push a `v*` tag** → macos / windows runners build both `.yak` packages and **push to the production server**. The job fails if the tag doesn't match the csproj `<Version>` (the csproj stays the single source of truth).
+- **workflow_dispatch (manual run)** → the same build goes to the **test server** (wiped nightly), for rehearsing the release pipeline.
+
+```bash
+# release: bump <Version> in the csproj, commit, then push a tag
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-仕組み上のポイント:
+How it fits together:
 
-- プラットフォームタグ（`-mac`/`-win`）は `yak build --platform` で**パッケージに焼き込まれる**ので、
-  push 自体は 1 つの linux ジョブに集約できる（ビルドだけ OS 別ランナーが必要）。
-- yak CLI は[スタンドアロン配布](https://files.mcneel.com/yak/tools/0.13.0/)を使うため、ランナーに Rhino のインストールは不要。
-  コンパイル参照（RhinoCommon / Rhino.UI / Eto）も NuGet の RhinoCommon パッケージが供給する。
-- **初回セットアップ（一度だけ）**: 手元で `yak login --ci` を実行すると**失効しない** API キーが
-  発行されるので、リポジトリの Secrets に `YAK_TOKEN` として登録する（yak は環境変数
-  `YAK_TOKEN` から自動で読む）。通常の `yak login` のトークンは約 30 日で切れるので CI には使わない。
+- Platform tags (`-mac`/`-win`) are **baked into the package** by `yak build --platform`, so pushing collapses into a single linux job (only the builds need per-OS runners).
+- The [standalone yak CLI](https://files.mcneel.com/yak/tools/0.13.0/) is used, so runners don't need Rhino installed. Compile references (RhinoCommon / Rhino.UI / Eto) come from the RhinoCommon NuGet package.
+- **One-time setup**: run `yak login --ci` locally to get a **non-expiring** API key and store it as the `YAK_TOKEN` repo secret (yak reads `YAK_TOKEN` automatically). Regular `yak login` tokens expire after ~30 days — don't use them in CI.
 
-### 対応 Rhino 最小バージョン（配布タグ）
+### Minimum supported Rhino (distribution tag)
 
-yak は `.rhp` が参照する **RhinoCommon のバージョン**を配布タグ（例 `rh8_32` = Rhino 8.32 以上）
-として刻む。開発機にインストールされた Rhino のバージョンに追従してフロアが勝手に変わらないよう、
-`src/CoRhino.csproj` の `RhinoCommonVersion` で **NuGet の RhinoCommon を固定参照**している
-（`ExcludeAssets="runtime"` = 参照専用。実体は Rhino が実行時に供給する）。
+yak stamps the **RhinoCommon version** the `.rhp` references as the distribution tag (e.g. `rh8_32` = Rhino 8.32+). To keep the floor from silently drifting with the dev machine's installed Rhino, `RhinoCommonVersion` in `src/CoRhino.csproj` **pins the NuGet RhinoCommon** (`ExcludeAssets="runtime"` = compile-only; the real assemblies come from Rhino at runtime).
 
-- 現在のフロア: **rh8_32**（`8.32.26160.13001`、最新）。
-- 固定できる下限は **rh8_19**（`8.19.25132.1001`）。RhinoCommon NuGet が CoreCLR（net7.0）
-  アセンブリを同梱するのは 8.19 以降で、8.18 以前は net48 のみ＝net8.0 ビルドで復元できない。
-- 古い Rhino 8 まで対応を広げたいときは `RhinoCommonVersion` を下げる（下限 8.19）。
+- Current floor: **rh8_32** (`8.32.26160.13001`, latest).
+- Lowest pinnable: **rh8_19** (`8.19.25132.1001`) — the RhinoCommon NuGet only ships CoreCLR (net7.0) assemblies from 8.19 on; 8.18 and earlier are net48-only and won't restore in a net8.0 build.
+- To support older Rhino 8, lower `RhinoCommonVersion` (floor: 8.19).
