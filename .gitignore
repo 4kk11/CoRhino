@@ -68,3 +68,6 @@ Desktop.ini
 *.log
 *.bak
 *.swp
+
+# Docs (kept out of version control)
+docs/
