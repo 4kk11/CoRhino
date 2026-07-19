@@ -192,3 +192,7 @@ yak stamps the **RhinoCommon version** the `.rhp` references as the distribution
 - Current floor: **rh8_32** (`8.32.26160.13001`, latest).
 - Lowest pinnable: **rh8_19** (`8.19.25132.1001`) — the RhinoCommon NuGet only ships CoreCLR (net7.0) assemblies from 8.19 on; 8.18 and earlier are net48-only and won't restore in a net8.0 build.
 - To support older Rhino 8, lower `RhinoCommonVersion` (floor: 8.19).
+
+## License
+
+[MIT](LICENSE). Bundled third-party components (Porta.Pty, xterm.js — both MIT) are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md); both files ship inside the `.yak` package.

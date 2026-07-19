@@ -192,3 +192,7 @@ yak は `.rhp` が参照する **RhinoCommon のバージョン**を配布タグ
 - 現在のフロア: **rh8_32**（`8.32.26160.13001`、最新）。
 - 固定できる下限は **rh8_19**（`8.19.25132.1001`）。RhinoCommon NuGet が CoreCLR（net7.0）アセンブリを同梱するのは 8.19 以降で、8.18 以前は net48 のみ＝net8.0 ビルドで復元できない。
 - 古い Rhino 8 まで対応を広げたいときは `RhinoCommonVersion` を下げる（下限 8.19）。
+
+## ライセンス
+
+[MIT](LICENSE)。同梱するサードパーティ（Porta.Pty / xterm.js — いずれも MIT）の表示は [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) にまとめており、両ファイルとも `.yak` パッケージに同梱される。

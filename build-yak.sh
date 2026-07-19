@@ -79,9 +79,13 @@ mkdir -p "$STAGE"
 tar -C "$BUILD_OUT" --exclude '*.pdb' --exclude '.DS_Store' -cf - . \
   | tar -C "$STAGE" -xf -
 
-# --- 3. Drop in manifest + icon at the package root ---------------------------
+# --- 3. Drop in manifest + icon + license files at the package root -----------
 cp "$PROJ_DIR/yak/manifest.yml" "$STAGE/manifest.yml"
 cp "$PROJ_DIR/yak/icon.png"     "$STAGE/icon.png"
+# Bundled MIT dependencies (Porta.Pty, xterm.js) require their notices to ship
+# with the distribution.
+cp "$PROJ_DIR/LICENSE"                 "$STAGE/LICENSE"
+cp "$PROJ_DIR/THIRD-PARTY-NOTICES.md"  "$STAGE/THIRD-PARTY-NOTICES.md"
 
 # --- 4. Build the package -----------------------------------------------------
 echo ">> yak build --platform $PLATFORM"
