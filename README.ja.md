@@ -47,9 +47,8 @@ Rhino プロセス
 Rhino のパッケージマネージャからインストールする。
 
 1. Rhino で `_PackageManager` を実行（Tools ▸ Package Manager）
-2. **「プレリリースを含める（Include pre-releases）」にチェック**（CoRhino は現在ベータ版のみ）
-3. **CoRhino** を検索してインストール
-4. Rhino を再起動
+2. **CoRhino** を検索してインストール
+3. Rhino を再起動
 
 ソースからビルドする場合は[開発者向け](#開発者向け)を参照。
 

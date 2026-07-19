@@ -47,9 +47,8 @@ Rhino process
 Install from the Rhino Package Manager:
 
 1. In Rhino, run `_PackageManager` (Tools ▸ Package Manager)
-2. Check **"Include pre-releases"** (CoRhino is currently in beta)
-3. Search for **CoRhino** and install
-4. Restart Rhino
+2. Search for **CoRhino** and install
+3. Restart Rhino
 
 To build from source instead, see [For developers](#for-developers).
 
