@@ -1,6 +1,6 @@
 # CoRhino
 
-Rhino 8 にドックした Claude Code パネル（C# プラグイン `src/` + xterm.js UI `ui/`）。
+Rhino（8 / 9 Beta）にドックした Claude Code パネル（C# プラグイン `src/` + xterm.js UI `ui/`）。
 PTY で `claude` を起動し、公式 Rhino-MCP-Platform のホストに direct-HTTP で接続させる。
 
 ## プロジェクトステータス: Pre-alpha / WIP
@@ -60,3 +60,5 @@ gitmoji 形式（例: `✨ feat: ...`）。タイトル・本文は英語。
 - 本リポジトリは my-life の submodule（`.06_Projects/CoRhino`）。変更は submodule 側で commit/push し、親の gitlink を更新する
 - NEVER: Rhino の plugin ディレクトリにコピーされた成果物を直接編集しない。必ず再ビルドで反映する
 - macOS は arm64/x64 の native dylib を `lipo` でユニバーサル化して同梱している（片方だけだと dlopen 失敗）
+- macOS の plugin ディレクトリは Rhino のメジャーバージョンごと（`Rhinoceros/8.0/` と `9.0/`）。ビルドは両方に配置する。
+  対応 Rhino を増やすときは csproj の `PluginDest` アイテムと Makefile の `PLUGIN_DIR_*` を揃えて追加する

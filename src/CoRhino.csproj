@@ -22,13 +22,19 @@
     <RhinoCommonVersion>8.32.26160.13001</RhinoCommonVersion>
   </PropertyGroup>
 
-  <PropertyGroup Condition="'$(OS)' == 'Unix'">
-    <PluginDestDir>$(HOME)/Library/Application Support/McNeel/Rhinoceros/8.0/MacPlugIns/CoRhino</PluginDestDir>
-  </PropertyGroup>
+  <!-- Dev-install targets. On macOS the plugin folder is scoped per Rhino MAJOR
+       version, so one build must land in every Rhino we support (a copy under
+       8.0 is invisible to Rhino 9). Windows has no such split: Rhino registers
+       plugins by path, and `myplugins` is shared across versions, so one entry
+       covers both. -->
+  <ItemGroup Condition="'$(OS)' == 'Unix'">
+    <PluginDest Include="$(HOME)/Library/Application Support/McNeel/Rhinoceros/8.0/MacPlugIns/CoRhino" />
+    <PluginDest Include="$(HOME)/Library/Application Support/McNeel/Rhinoceros/9.0/MacPlugIns/CoRhino" />
+  </ItemGroup>
 
-  <PropertyGroup Condition="'$(OS)' == 'Windows_NT'">
-    <PluginDestDir>$(APPDATA)\McNeel\Rhinoceros\myplugins\CoRhino</PluginDestDir>
-  </PropertyGroup>
+  <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
+    <PluginDest Include="$(APPDATA)\McNeel\Rhinoceros\myplugins\CoRhino" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- Reference-only (ExcludeAssets=runtime): Rhino provides these at runtime,
@@ -92,10 +98,24 @@
     <Copy SourceFiles="@(CcPluginFiles)" DestinationFolder="$(TargetDir)cc-plugin/%(RecursiveDir)" SkipUnchangedFiles="true" />
   </Target>
 
-  <Target Name="PostBuild" AfterTargets="PostBuildEvent" DependsOnTargets="FlattenNativeLibs;CopyWebUi;CopyCcPlugin">
+  <!-- Collected once, outside PostBuild: PostBuild is target-batched over
+       PluginDest, and an ItemGroup inside a batched target would append the same
+       files again on every batch. -->
+  <Target Name="CollectPluginFiles">
     <ItemGroup>
       <PluginFiles Include="$(TargetDir)**\*.*" />
     </ItemGroup>
+  </Target>
+
+  <!-- Outputs="%(PluginDest.Identity)" runs this target once per dest dir with
+       $(PluginDestDir) bound to that single path. (Outputs without Inputs only
+       drives batching — it does not enable up-to-date skipping.) -->
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent"
+          DependsOnTargets="FlattenNativeLibs;CopyWebUi;CopyCcPlugin;CollectPluginFiles"
+          Outputs="%(PluginDest.Identity)">
+    <PropertyGroup>
+      <PluginDestDir>%(PluginDest.Identity)</PluginDestDir>
+    </PropertyGroup>
     <MakeDir Directories="$(PluginDestDir)" />
     <!-- SkipUnchangedFiles + ContinueOnError lets the build succeed even when Rhino has some DLLs locked.
          The locked DLLs are unchanged native deps, so skipping them is harmless. -->

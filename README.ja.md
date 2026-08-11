@@ -8,7 +8,7 @@
   <a href="README.md">English</a> | 日本語
 </p>
 
-Rhino に **AI コーディングエージェントをドックする** Rhino 8 プラグイン。サイドパネルに常駐したエージェント（Claude Code / Codex CLI、タブごとに選択）が、いま開いているその Rhino を操作できる。
+Rhino に **AI コーディングエージェントをドックする** Rhino プラグイン（Rhino 8 / Rhino 9 Beta 対応）。サイドパネルに常駐したエージェント（Claude Code / Codex CLI、タブごとに選択）が、いま開いているその Rhino を操作できる。
 
 非エンジニアでも「パネルを開くだけ」で使えることを目標にしており、`MCPConnect` / 設定ファイルの貼り付け / 手動の MCP 起動を一切踏ませない。Rhino 操作の実体（tools / agents）は公式 [Rhino-MCP-Platform](https://github.com/mcneel/RhinoMCP) に乗り、CoRhino はその**パネル UX・起動配線・オンボーディング**だけを担う（ツールは持たない）。
 
@@ -35,7 +35,8 @@ Rhino プロセス
 
 ## 必要環境
 
-- **Rhino 8.32 以降** — 推奨は macOS（Apple Silicon）。Intel Mac / Windows でも動作する
+- **Rhino 8.32 以降**、または **Rhino 9 Beta** — 推奨は macOS（Apple Silicon）。Intel Mac / Windows でも動作する
+  - パッケージは 1 本で両対応。配布タグはフロア（下限）なので、`rh8_32` パッケージがそのまま Rhino 9 にも入る
 - **[Claude Code](https://claude.com/claude-code) CLI**（`claude`）が PATH 上にあること
   - 見つからない場合はタブ内にセットアップビューが出て、公式インストーラをボタン一つで実行できる
 - （任意）**[Codex CLI](https://developers.openai.com/codex/cli)**（`codex`）**0.142 以降** — あれば「＋」メニューから codex タブを起動できる。無ければグレーアウトされるだけで claude 側に影響はない
@@ -111,7 +112,9 @@ make build     # = dotnet build src/CoRhino.csproj
 ```
 
 - `BuildUi` ターゲットが `ui/` で `npm install`（初回のみ）+ `npm run build` を実行
-- 成果物を `web/` として `.rhp` の隣に配置し、PostBuild が Rhino の plugin ディレクトリ（macOS: `~/Library/Application Support/McNeel/Rhinoceros/8.0/MacPlugIns/CoRhino`）へコピー
+- 成果物を `web/` として `.rhp` の隣に配置し、PostBuild が **すべての** Rhino plugin ディレクトリへコピー
+  - macOS: `~/Library/Application Support/McNeel/Rhinoceros/{8.0,9.0}/MacPlugIns/CoRhino` — plugin ディレクトリは Rhino のメジャーバージョンごとに分かれるため、1 回のビルドで両方に入れる
+  - Windows: `%APPDATA%\McNeel\Rhinoceros\myplugins\CoRhino` — バージョン共通なので 1 箇所で両対応
 - macOS は arm64/x64 の native dylib を `lipo` でユニバーサル化して同梱（片方だけだと dlopen 失敗）
 
 > コピー先（plugin ディレクトリ）を直接編集しないこと。常に再ビルドで反映する。
@@ -191,6 +194,8 @@ yak は `.rhp` が参照する **RhinoCommon のバージョン**を配布タグ
 - 現在のフロア: **rh8_32**（`8.32.26160.13001`、最新）。
 - 固定できる下限は **rh8_19**（`8.19.25132.1001`）。RhinoCommon NuGet が CoreCLR（net7.0）アセンブリを同梱するのは 8.19 以降で、8.18 以前は net48 のみ＝net8.0 ビルドで復元できない。
 - 古い Rhino 8 まで対応を広げたいときは `RhinoCommonVersion` を下げる（下限 8.19）。
+
+タグは **pin ではなく floor（下限）**。`rh8_32` は Rhino 9 にもそのまま入る（検証済み: Rhino 9 Beta の yak で `.../Rhinoceros/packages/9.0/corhino` にインストールされる）。したがって Rhino 9 用の**別パッケージは不要**。Rhino 9 専用の RhinoCommon API が必要になったときだけ `rh9_*` ビルドを追加する。
 
 ## ライセンス
 

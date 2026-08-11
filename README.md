@@ -8,7 +8,7 @@
   English | <a href="README.ja.md">日本語</a>
 </p>
 
-A Rhino 8 plugin that **docks an AI coding agent into Rhino**. Agents (Claude Code / Codex CLI, selectable per tab) live in a side panel and operate the very Rhino instance they are docked in.
+A Rhino plugin (Rhino 8 and Rhino 9 Beta) that **docks an AI coding agent into Rhino**. Agents (Claude Code / Codex CLI, selectable per tab) live in a side panel and operate the very Rhino instance they are docked in.
 
 The goal is that non-engineers can use it by just opening the panel — no `MCPConnect`, no config-file pasting, no manual MCP setup. All Rhino tools/agents live in the official [Rhino-MCP-Platform](https://github.com/mcneel/RhinoMCP); CoRhino only provides the **panel UX, launch wiring, and onboarding** (it ships no tools of its own).
 
@@ -35,7 +35,8 @@ Rhino process
 
 ## Requirements
 
-- **Rhino 8.32 or later** — macOS (Apple Silicon) is the recommended platform; Intel Mac and Windows also work
+- **Rhino 8.32 or later**, or **Rhino 9 Beta** — macOS (Apple Silicon) is the recommended platform; Intel Mac and Windows also work
+  - One package serves both: the distribution tag is a floor, so the `rh8_32` package installs on Rhino 9 as well
 - **[Claude Code](https://claude.com/claude-code) CLI** (`claude`) on your PATH
   - If missing, the tab shows a setup view that runs the official installer with one click
 - (Optional) **[Codex CLI](https://developers.openai.com/codex/cli)** (`codex`) **0.142 or later** — enables codex tabs in the "+" menu; grayed out if absent, with no effect on claude tabs
@@ -111,7 +112,9 @@ make build     # = dotnet build src/CoRhino.csproj
 ```
 
 - The `BuildUi` target runs `npm install` (first time only) + `npm run build` in `ui/`
-- Output lands next to the `.rhp` as `web/`, then PostBuild copies everything to the Rhino plugin dir (macOS: `~/Library/Application Support/McNeel/Rhinoceros/8.0/MacPlugIns/CoRhino`)
+- Output lands next to the `.rhp` as `web/`, then PostBuild copies everything to **every** Rhino plugin dir
+  - macOS: `~/Library/Application Support/McNeel/Rhinoceros/{8.0,9.0}/MacPlugIns/CoRhino` — the folder is per Rhino major version, so one build installs into both
+  - Windows: `%APPDATA%\McNeel\Rhinoceros\myplugins\CoRhino` — shared across versions, one copy covers both
 - macOS bundles a universal (arm64/x64) native dylib via `lipo` — shipping only one architecture breaks `dlopen`
 
 > Never edit the copied plugin dir directly; always rebuild.
@@ -191,6 +194,8 @@ yak stamps the **RhinoCommon version** the `.rhp` references as the distribution
 - Current floor: **rh8_32** (`8.32.26160.13001`, latest).
 - Lowest pinnable: **rh8_19** (`8.19.25132.1001`) — the RhinoCommon NuGet only ships CoreCLR (net7.0) assemblies from 8.19 on; 8.18 and earlier are net48-only and won't restore in a net8.0 build.
 - To support older Rhino 8, lower `RhinoCommonVersion` (floor: 8.19).
+
+The tag is a **floor, not a pin**: `rh8_32` also installs on Rhino 9 (verified — Rhino 9 Beta's yak installs it into `.../Rhinoceros/packages/9.0/corhino`). So Rhino 9 needs **no separate package**; only add an `rh9_*` build if the plugin ever requires Rhino 9-only RhinoCommon API.
 
 ## License
 

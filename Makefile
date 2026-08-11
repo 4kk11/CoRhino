@@ -9,15 +9,30 @@ CSPROJ      := src/CoRhino.csproj
 UI_DIR      := ui
 TEST_SOURCE := https://test.yak.rhino3d.com
 
-# OS-specific paths (override any with `make <target> YAK=... PLUGIN_DIR=...`).
+# OS-specific paths (override any with `make <target> YAK=... PLUGIN_DIR_8=...`).
+#
+# PLUGIN_DIR_* mirrors the csproj's PluginDest items: on macOS the plugin folder is
+# per Rhino major version, so a dev build installs into BOTH 8.0 and 9.0 (Rhino 9
+# cannot see anything under 8.0). Windows shares one `myplugins` folder across
+# versions, so both point at the same path there.
+#
+# YAK is only the CLI used to log in / push; any Rhino's copy works. Prefer the
+# Rhino 8 one and fall back to the Rhino 9 Beta bundle so a machine with only the
+# Beta installed still works. (`shell test` rather than `wildcard`: the paths
+# contain spaces, which `wildcard` would split on.)
 UNAME := $(shell uname -s)
 ifeq ($(UNAME),Darwin)
-  YAK        ?= /Applications/Rhino 8.app/Contents/Resources/bin/yak
-  PLUGIN_DIR ?= $(HOME)/Library/Application Support/McNeel/Rhinoceros/8.0/MacPlugIns/CoRhino
+  RH8_YAK      := /Applications/Rhino 8.app/Contents/Resources/bin/yak
+  RH9_YAK      := /Applications/RhinoBETA.app/Contents/Resources/bin/yak
+  PLUGIN_DIR_8 ?= $(HOME)/Library/Application Support/McNeel/Rhinoceros/8.0/MacPlugIns/CoRhino
+  PLUGIN_DIR_9 ?= $(HOME)/Library/Application Support/McNeel/Rhinoceros/9.0/MacPlugIns/CoRhino
 else
-  YAK        ?= /c/Program Files/Rhino 8/System/Yak.exe
-  PLUGIN_DIR ?= $(APPDATA)/McNeel/Rhinoceros/myplugins/CoRhino
+  RH8_YAK      := /c/Program Files/Rhino 8/System/Yak.exe
+  RH9_YAK      := /c/Program Files/Rhino 9/System/Yak.exe
+  PLUGIN_DIR_8 ?= $(APPDATA)/McNeel/Rhinoceros/myplugins/CoRhino
+  PLUGIN_DIR_9 ?= $(APPDATA)/McNeel/Rhinoceros/myplugins/CoRhino
 endif
+YAK ?= $(shell test -f "$(RH8_YAK)" && echo "$(RH8_YAK)" || echo "$(RH9_YAK)")
 
 .DEFAULT_GOAL := help
 
@@ -29,7 +44,7 @@ help:
 
 # ── Build ────────────────────────────────────────────────────────────────────
 
-## build: Debug build (builds UI, flattens native libs, installs to the Rhino plugin dir)
+## build: Debug build (builds UI, flattens native libs, installs to every Rhino plugin dir: 8 + 9)
 .PHONY: build
 build:
 	dotnet build $(CSPROJ)
@@ -86,8 +101,9 @@ yak-push:
 clean:
 	rm -rf src/bin src/obj dist $(UI_DIR)/dist
 
-## uninstall: remove the locally installed plugin from the Rhino plugin dir
+## uninstall: remove the locally installed plugin from every Rhino plugin dir (8 + 9)
 .PHONY: uninstall
 uninstall:
-	rm -rf "$(PLUGIN_DIR)"
-	@echo "Removed $(PLUGIN_DIR)"
+	rm -rf "$(PLUGIN_DIR_8)" "$(PLUGIN_DIR_9)"
+	@echo "Removed $(PLUGIN_DIR_8)"
+	@echo "Removed $(PLUGIN_DIR_9)"

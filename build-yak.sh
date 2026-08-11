@@ -13,8 +13,13 @@
 # Native deps are per-OS (mac: libporta_pty.dylib fat binary; win: Vanara*.dll +
 # win-x64 native). A package therefore only runs on the OS it was built on, so we
 # tag the platform accordingly and this script must be run once per target OS:
-#   - macOS  -> produces corhino-<ver>-rh8_0-mac.yak
-#   - Windows-> produces corhino-<ver>-rh8_0-win.yak  (run under Git Bash / WSL)
+#   - macOS  -> produces corhino-<ver>-rh8_32-mac.yak
+#   - Windows-> produces corhino-<ver>-rh8_32-win.yak  (run under Git Bash / WSL)
+#
+# ONE package covers Rhino 8 and Rhino 9: the distribution tag is a FLOOR, so a
+# rh8_32 package installs on Rhino 9 too (verified with Rhino 9 Beta's yak — it
+# lands in .../Rhinoceros/packages/9.0/corhino). Do not add a second rh9-tagged
+# build unless the plugin actually needs Rhino 9-only RhinoCommon API.
 #
 # Usage:
 #   ./build-yak.sh                 # build Release, package with csproj version
@@ -41,18 +46,36 @@ if [[ -z "$VERSION_OVERRIDE" ]]; then
 fi
 
 # --- Resolve yak binary + platform tag per OS ---------------------------------
+# Any Rhino's yak can build the package (the distribution tag comes from the
+# RhinoCommon the .rhp references, not from the CLI), so we take the first one
+# present: Rhino 8, then the Rhino 9 Beta bundle. That way a machine with only
+# the Beta installed can still package.
 case "$(uname -s)" in
   Darwin)
-    YAK="${YAK:-/Applications/Rhino 8.app/Contents/Resources/bin/yak}"
+    YAK_CANDIDATES=(
+      "/Applications/Rhino 8.app/Contents/Resources/bin/yak"
+      "/Applications/RhinoBETA.app/Contents/Resources/bin/yak"
+      "/Applications/Rhino 9.app/Contents/Resources/bin/yak"
+    )
     PLATFORM="mac"
     ;;
   MINGW*|MSYS*|CYGWIN*|Windows_NT)
-    YAK="${YAK:-/c/Program Files/Rhino 8/System/Yak.exe}"
+    YAK_CANDIDATES=(
+      "/c/Program Files/Rhino 8/System/Yak.exe"
+      "/c/Program Files/Rhino 9/System/Yak.exe"
+    )
     PLATFORM="win"
     ;;
   *)
     echo "Unsupported OS: $(uname -s)" >&2; exit 1 ;;
 esac
+
+if [[ -z "${YAK:-}" ]]; then
+  for candidate in "${YAK_CANDIDATES[@]}"; do
+    if [[ -f "$candidate" ]]; then YAK="$candidate"; break; fi
+  done
+  YAK="${YAK:-${YAK_CANDIDATES[0]}}"   # keep the first path for the error message below
+fi
 
 if [[ ! -x "$YAK" && ! -f "$YAK" ]]; then
   echo "yak not found at: $YAK" >&2
