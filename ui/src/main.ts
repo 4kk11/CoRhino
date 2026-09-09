@@ -3,7 +3,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { createSkillsDrawer, type SkillsListPayload } from './skills-drawer'
 import { createSessionsDrawer, statusGlyph, type AgentStatus, type SessionsListPayload } from './sessions-drawer'
-import { createSettingsDrawer, type PanelSettingsPayload } from './settings-drawer'
+import { createSettingsDrawer, type PanelSettingsPayload, type SettingKey } from './settings-drawer'
 import { L } from './i18n'
 
 // The CLI a tab runs — the wire enum shared with the host (createTab /
@@ -64,7 +64,7 @@ declare global {
       onCliAvailability: (payload: CliAvailabilityPayload) => void
       // A tab's CLI setup state changed (missing / installing / failed).
       onCliSetup: (payload: CliSetupPayload) => void
-      // Panel settings (getSettings response / setSandbox echo).
+      // Panel settings (getSettings response / setSetting echo).
       onPanelSettings: (payload: PanelSettingsPayload) => void
     }
     chrome?: { webview?: { postMessage: (msg: string) => void } }
@@ -88,7 +88,7 @@ type Outbound =
   | { type: 'recheckCli'; agentId: string }
   | { type: 'openShellInTab'; agentId: string }
   | { type: 'getSettings' }
-  | { type: 'setSandbox'; enabled: boolean }
+  | { type: 'setSetting'; key: SettingKey; enabled: boolean }
   | { type: 'debug'; message: string }
 
 function post(msg: Outbound) {
@@ -413,7 +413,7 @@ ${isWindowsWebView2 ? `
   })
   const settingsDrawer = createSettingsDrawer({
     requestSettings: () => post({ type: 'getSettings' }),
-    setSandbox: (enabled) => post({ type: 'setSandbox', enabled }),
+    setSetting: (key, enabled) => post({ type: 'setSetting', key, enabled }),
     onToggled: (open) => {
       if (open) {
         drawer.close()

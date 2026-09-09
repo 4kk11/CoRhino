@@ -93,13 +93,21 @@ An agent can **spawn child tabs and delegate work to them**. Ask "hand this off 
 - Spawned sessions carry a `⧉` badge ("↳ spawned by …") in the 🕘 drawer.
 - Max 8 tabs total; children are Claude Code only in V1.
 
-### Settings (⚙) — sandbox
+### Settings (⚙)
 
-The ⚙ drawer holds a **sandbox** toggle (saved to `~/.corhino/settings.json`, default OFF). When ON, agent shell commands run OS-sandboxed with file writes confined to `~/.corhino`; legitimate operations outside just fall back to the normal approval flow. **Rhino model operations via MCP are unaffected** — the model is still protected by the layer convention and Undo.
+The ⚙ drawer holds the panel's user settings, saved to `~/.corhino/settings.json`. Both apply to **new tabs** only (never to running sessions — a tab's sandbox is fixed at spawn).
 
-- Applies to **new tabs** only (not running sessions)
+**Sandbox** (default OFF). When ON, agent shell commands run OS-sandboxed with file writes confined to `~/.corhino`; legitimate operations outside just fall back to the normal approval flow. **Rhino model operations via MCP are unaffected** — the model is still protected by the layer convention and Undo.
+
 - **macOS only** (uses Claude Code's built-in Seatbelt sandbox; the toggle is disabled on Windows)
-- **Claude Code tabs only** — codex tabs are always sandboxed by design (`workspace-write`, paired with no approval prompts) and are not affected by the toggle
+- **Claude Code tabs only** — codex tabs are always sandboxed by design (`workspace-write`, paired with no approval prompts) and are not affected by this toggle
+
+**Codex network** (default OFF). Codex tabs are always sandboxed, and that sandbox blocks the network. Turning this ON passes `sandbox_workspace_write.network_access=true` so commands in codex tabs can reach the network.
+
+- **Codex tabs only** (Claude Code is unaffected)
+- The flag gates more than the internet. Codex hangs local unix sockets and the `com.apple.*` mach services on the same switch, `com.apple.SecurityServer` included — so with it OFF the **macOS Keychain is unreachable** and any keychain-cached credential reads as absent. Measured inside a real codex sandbox (see `docs/design-history.md` D27)
+- It does **not** make the 1Password CLI (`op`) work. `op` reaches the desktop app over XPC to `2BUA8C4S2C.com.1password.browser-helper`, and codex's mach-lookup allowlist is `com.apple.*` only — denied in both states, with no config knob. For a CLI that caches its key in the keychain (e.g. `comfyctl`), warm the cache once from an ordinary terminal; codex tabs then use it while it is fresh
+- ON means codex shell commands reach the network with no approval prompt (codex tabs run `-a never`), so opt in knowingly
 
 ## For developers
 

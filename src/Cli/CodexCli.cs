@@ -116,6 +116,18 @@ namespace CoRhino.Cli
             args.Add("sandbox_workspace_write.writable_roots=[" +
                 TomlString(Workspace.UserSkillsRoot.Replace('\\', '/')) + "]");
 
+            // Network. Emitted in BOTH states rather than leaning on codex's
+            // default, so the spawn's rollout turn_context says out loud which
+            // one this tab got (diagnosing the OFF case from the transcript is
+            // otherwise guesswork). This flag gates more than the internet:
+            // codex's seatbelt profile hangs unix sockets AND the com.apple.*
+            // mach services behind it — SecurityServer included, so with it OFF
+            // the macOS Keychain is unreachable and every keychain-cached
+            // credential reads as absent (measured, see D27).
+            args.Add("-c");
+            args.Add("sandbox_workspace_write.network_access=" +
+                (ctx.CodexNetworkAccess ? "true" : "false"));
+
             // (1) Plugins inject MCP servers (and tools) that config.toml never
             // mentions — disable the whole feature for this session.
             args.Add("--disable");

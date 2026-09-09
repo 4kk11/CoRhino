@@ -742,15 +742,17 @@ namespace CoRhino.Panel
                 // Everything CLI-specific — MCP isolation, session identity,
                 // layer-instruction injection — is the adapter's job; this method
                 // only owns the CLI-independent PTY plumbing.
+                // Read at spawn time so the toggles apply to every tab created
+                // after a flip, without a panel reload.
+                var settings = PanelSettings.Load();
                 var ctx = new SpawnContext(
                     tab.AgentId, _hostPort, cwd,
                     tab.SessionId, tab.Resume,
                     tab.LayerToken,
                     DateTime.UtcNow,
                     tab.RequestedPermissionMode,
-                    // Read at spawn time so the toggle applies to every tab
-                    // created after the flip, without a panel reload.
-                    PanelSettings.SandboxSupported && PanelSettings.Load().SandboxEnabled);
+                    PanelSettings.SandboxSupported && settings.SandboxEnabled,
+                    settings.CodexNetworkEnabled);
                 // A .cmd shim may have resolved to `node.exe <script.js>` —
                 // the script rides in front of the CLI's own args.
                 var args = prefixArgs.Concat(cli.BuildArgs(ctx)).ToArray();
@@ -921,9 +923,11 @@ namespace CoRhino.Panel
             });
         }
 
-        // Settings drawer state (getSettings response / setSandbox echo).
-        // sandboxSupported rides along so the UI can grey the toggle out on
+        // Settings drawer state (getSettings response / setSetting echo).
+        // sandboxSupported rides along so the UI can grey that toggle out on
         // Windows instead of offering a switch that silently does nothing.
+        // codexNetwork needs no support flag: codex's sandbox is its own, on
+        // every OS it runs on.
         void PushPanelSettings()
         {
             var s = PanelSettings.Load();
@@ -931,7 +935,12 @@ namespace CoRhino.Panel
             {
                 if (!_webReady) return;
                 var encoded = JsonSerializer.Serialize(
-                    new { sandboxEnabled = s.SandboxEnabled, sandboxSupported = PanelSettings.SandboxSupported },
+                    new
+                    {
+                        sandboxEnabled = s.SandboxEnabled,
+                        sandboxSupported = PanelSettings.SandboxSupported,
+                        codexNetworkEnabled = s.CodexNetworkEnabled,
+                    },
                     JsonOptions);
                 _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onPanelSettings({encoded})");
             });
@@ -1120,18 +1129,30 @@ namespace CoRhino.Panel
                         PushPanelSettings();
                         break;
 
-                    case "setSandbox":
-                        if (root.TryGetProperty("enabled", out var sandboxEl))
+                    // One message for every drawer switch: the key names the
+                    // setting, so a new toggle costs a row here and a row in the
+                    // drawer instead of a new message type on both sides.
+                    case "setSetting":
+                    {
+                        if (!root.TryGetProperty("key", out var keyEl) ||
+                            !root.TryGetProperty("enabled", out var enabledEl)) break;
+                        var key = keyEl.GetString();
+                        var enabled = enabledEl.GetBoolean();
+                        var s = PanelSettings.Load();
+                        if (key == "sandbox") s.SandboxEnabled = enabled;
+                        else if (key == "codexNetwork") s.CodexNetworkEnabled = enabled;
+                        else
                         {
-                            var s = PanelSettings.Load();
-                            s.SandboxEnabled = sandboxEl.GetBoolean();
-                            s.Save();
-                            Log.Write($"[CoRhino] sandbox setting → {s.SandboxEnabled} (new tabs only).");
-                            // No optimistic UI: the drawer renders what was
-                            // actually saved (same stance as renameSession).
-                            PushPanelSettings();
+                            Log.Write($"[CoRhino] unknown setting key from UI: {key}");
+                            break;
                         }
+                        s.Save();
+                        Log.Write($"[CoRhino] setting {key} → {enabled} (new tabs only).");
+                        // No optimistic UI: the drawer renders what was
+                        // actually saved (same stance as renameSession).
+                        PushPanelSettings();
                         break;
+                    }
 
                     case "debug":
                         if (root.TryGetProperty("message", out var msgEl))

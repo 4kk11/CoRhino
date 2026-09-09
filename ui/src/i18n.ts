@@ -61,6 +61,9 @@ const ja = {
   sandboxDesc: 'エージェントのコマンド実行を OS レベルで隔離し、ファイルの書き込み先を CoRhino ワークスペース内に制限します。範囲外の操作は通常の承認フローに戻ります。Rhino モデルの操作（MCP 経由）には影響しません。対象は Claude Code のタブのみ（Codex は常時サンドボックスで動作）。',
   sandboxAppliesToNewTabs: '変更は新しいタブから適用されます（実行中のセッションには影響しません）',
   sandboxUnsupported: 'この OS では利用できません（macOS のみ対応）',
+  codexNetworkTitle: 'Codex のネットワーク',
+  codexNetworkDesc: 'Codex タブのコマンド実行にネットワークを許可します。この 1 つのフラグに外部通信・ローカルの Unix ソケット・macOS キーチェーンへの到達がまとめて紐づいており、OFF（既定）だとキーチェーンに保存済みの認証情報も「無い」ものとして扱われます。1Password CLI（op）はどちらでも動きません（アプリとの XPC 通信がサンドボックスの許可対象外のため）——キーチェーンにキャッシュ済みの鍵を使うツールは ON で動きます。対象は Codex のタブのみ（Claude Code には影響しません）。',
+  codexNetworkOn: 'ON: Codex のコマンド実行が外部ネットワークへ自由に接続できます',
 }
 
 const en: typeof ja = {
@@ -110,6 +113,9 @@ const en: typeof ja = {
   sandboxDesc: "Isolates the agent's command execution at the OS level, confining file writes to the CoRhino workspace. Anything outside falls back to the normal approval flow. Rhino model operations (via MCP) are unaffected. Applies to Claude Code tabs only (Codex always runs sandboxed).",
   sandboxAppliesToNewTabs: 'Applies to new tabs (running sessions are unaffected)',
   sandboxUnsupported: 'Not available on this OS (macOS only)',
+  codexNetworkTitle: 'Codex network',
+  codexNetworkDesc: "Allows network access from commands run in Codex tabs. This one flag also gates local unix sockets and the macOS Keychain, so with it OFF a keychain-cached credential reads as absent. The 1Password CLI (op) does not work either way — its XPC channel to the desktop app is outside the sandbox's allowed services — but tools reading a key already cached in the keychain do work when this is ON. Applies to Codex tabs only (Claude Code is unaffected).",
+  codexNetworkOn: 'ON: commands in Codex tabs can reach the network freely',
 }
 
 const lang = window.CORHINO_LANG ?? (navigator.language.startsWith('ja') ? 'ja' : 'en')

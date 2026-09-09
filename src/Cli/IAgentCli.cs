@@ -28,6 +28,10 @@ namespace CoRhino.Cli
     /// via the --settings file. Codex ignores it BY DESIGN: its tabs are always
     /// sandboxed (-s workspace-write, paired with -a never — see CodexCli.BuildArgs),
     /// and honoring OFF would mean danger-full-access under a never-ask policy.</param>
+    /// <param name="CodexNetworkAccess">The panel's codex-network setting at spawn time.
+    /// Codex maps it onto sandbox_workspace_write.network_access. Claude ignores it BY
+    /// DESIGN: its sandbox is governed by the --settings block above, and the two CLIs'
+    /// sandboxes are not the same surface (see D27).</param>
     internal sealed record SpawnContext(
         string AgentId,
         int HostPort,
@@ -37,7 +41,8 @@ namespace CoRhino.Cli
         string? LayerToken,
         DateTime SpawnedAtUtc,
         string? PermissionMode = null,
-        bool SandboxEnabled = false);
+        bool SandboxEnabled = false,
+        bool CodexNetworkAccess = false);
 
     /// <summary>
     /// Adapter for one agent CLI (claude, codex, …). Owns every per-CLI concern

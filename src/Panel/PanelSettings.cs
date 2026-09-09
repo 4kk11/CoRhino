@@ -27,6 +27,20 @@ namespace CoRhino.Panel
         public bool SandboxEnabled { get; set; }
 
         /// <summary>
+        /// Allow network access from commands run in codex tabs
+        /// (<c>sandbox_workspace_write.network_access</c>). Spawn-time only,
+        /// same as SandboxEnabled. Off by default — codex tabs pair
+        /// <c>-a never</c> with the sandbox, so opening the network means
+        /// unprompted outbound traffic, which the user should opt into
+        /// knowingly. The OFF case is broader than "no internet": codex gates
+        /// unix sockets and the <c>com.apple.*</c> mach services on the same
+        /// flag, so OFF also means no macOS Keychain — keychain-cached
+        /// credentials read as absent (see D27).
+        /// </summary>
+        [JsonPropertyName("codexNetworkEnabled")]
+        public bool CodexNetworkEnabled { get; set; }
+
+        /// <summary>
         /// Whether claude's sandbox can work on this OS at all. Seatbelt is
         /// macOS-only and the Linux path (bubblewrap) is irrelevant — Rhino
         /// runs on macOS and Windows, so this is effectively "not Windows".
