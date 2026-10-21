@@ -4,6 +4,7 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CoRhino.Panel
 {
@@ -239,13 +240,29 @@ namespace CoRhino.Panel
         /// Write this spawn's MCP config and return its path (passed to claude via
         /// --mcp-config). Keyed by port+agentId: the port is unique per panel, so
         /// two panels' agent-1 tabs never share a file. Derived content — always
-        /// rewritten; claude reads it once at startup.
+        /// rewritten; claude reads it once at startup. settings.json's
+        /// extraMcpServers are merged in after "rhino" (which they can't override).
         /// </summary>
         public static string EnsureAgentMcpConfig(int port, string agentId)
         {
             Directory.CreateDirectory(RuntimeRoot);
             var path = Path.Combine(RuntimeRoot, $"mcp-{port}-{agentId}.json");
-            File.WriteAllText(path, McpConfigTemplate(port, agentId));
+            var config = JsonNode.Parse(McpConfigTemplate(port, agentId))!;
+            var servers = config["mcpServers"]!.AsObject();
+            var extras = PanelSettings.Load().ExtraMcpServers;
+            if (extras != null)
+            {
+                foreach (var (name, server) in extras)
+                {
+                    if (servers.ContainsKey(name))
+                    {
+                        Log.Write($"[CoRhino] extraMcpServers: \"{name}\" is reserved; skipped");
+                        continue;
+                    }
+                    servers[name] = JsonNode.Parse(server.GetRawText());
+                }
+            }
+            File.WriteAllText(path, config.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
             Log.Write($"[CoRhino] Wrote MCP config at {path} (port {port}, agent {agentId})");
             return path;
         }

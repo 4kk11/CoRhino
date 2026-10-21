@@ -109,6 +109,23 @@ CLI バッジ（● claude / ◆ codex）の隣の**ステータスグリフ**�
 - **1Password CLI（`op`）は ON にしても動かない**。`op` はデスクトップアプリへ `2BUA8C4S2C.com.1password.browser-helper` への XPC で接続するが、codex の mach-lookup 許可リストは `com.apple.*` のみで、どちらの状態でも拒否される（設定で開ける手段は無い）。鍵をキーチェーンにキャッシュする CLI（`comfyctl` など）は、通常のターミナルで一度キャッシュを温めておけば、有効期限内は codex タブからそれを使える
 - ON = codex のシェルコマンドが承認プロンプトなしで外部へ出る（codex タブは `-a never`）。知った上で opt-in すること
 
+### 設定 — 追加 MCP サーバ
+
+Claude Code タブは `--strict-mcp-config` で起動するため、グローバル/プロジェクトの MCP 設定や claude.ai コネクタは読み込まれない。全タブに MCP サーバを追加したい場合は、`~/.corhino/settings.json` の `extraMcpServers` を手で編集する（`mcpServers` と同じ形）:
+
+```json
+{
+  "sandboxEnabled": false,
+  "extraMcpServers": {
+    "my-server": { "type": "http", "url": "https://example.com/mcp" }
+  }
+}
+```
+
+- 組み込みの `rhino` サーバの隣にマージされる。`rhino` という名前のエントリは無視される
+- 変更は**新しいタブから**適用される。OAuth が必要なサーバはタブ内の `/mcp` から認証する
+- 対象は **Claude Code タブのみ**（codex タブには適用されない）
+
 ## 開発者向け
 
 ### ビルド

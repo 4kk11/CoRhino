@@ -109,6 +109,23 @@ The ⚙ drawer holds the panel's user settings, saved to `~/.corhino/settings.js
 - It does **not** make the 1Password CLI (`op`) work. `op` reaches the desktop app over XPC to `2BUA8C4S2C.com.1password.browser-helper`, and codex's mach-lookup allowlist is `com.apple.*` only — denied in both states, with no config knob. For a CLI that caches its key in the keychain (e.g. `comfyctl`), warm the cache once from an ordinary terminal; codex tabs then use it while it is fresh
 - ON means codex shell commands reach the network with no approval prompt (codex tabs run `-a never`), so opt in knowingly
 
+### Settings — extra MCP servers
+
+Claude Code tabs are launched with `--strict-mcp-config`, so your global/project MCP servers and claude.ai connectors are not loaded. To give every tab additional MCP servers, hand-edit `extraMcpServers` in `~/.corhino/settings.json` (same shape as an `mcpServers` map):
+
+```json
+{
+  "sandboxEnabled": false,
+  "extraMcpServers": {
+    "my-server": { "type": "http", "url": "https://example.com/mcp" }
+  }
+}
+```
+
+- Merged next to the built-in `rhino` server; a `rhino` entry is ignored
+- Applies to **new tabs** only; OAuth servers are authenticated per tab via `/mcp`
+- **Claude Code tabs only** (not applied to codex tabs)
+
 ## For developers
 
 ### Build

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -39,6 +40,17 @@ namespace CoRhino.Panel
         /// </summary>
         [JsonPropertyName("codexNetworkEnabled")]
         public bool CodexNetworkEnabled { get; set; }
+
+        /// <summary>
+        /// Extra MCP servers merged into every Claude Code tab's --mcp-config
+        /// next to the built-in "rhino" server, in the same shape as an
+        /// mcpServers map ({ "name": { "type": "http", "url": ... } }).
+        /// Hand-edited only (no drawer UI). Spawn-time only, like the sandbox.
+        /// A "rhino" key is ignored so the panel's own wiring can't be replaced.
+        /// </summary>
+        [JsonPropertyName("extraMcpServers")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public Dictionary<string, JsonElement>? ExtraMcpServers { get; set; }
 
         /// <summary>
         /// Whether claude's sandbox can work on this OS at all. Seatbelt is
