@@ -10,11 +10,13 @@ namespace CoRhino.Cli
     {
         public static readonly IAgentCli Claude = new ClaudeCli();
         public static readonly IAgentCli Codex = new CodexCli();
+        public static readonly IAgentCli Pi = new PiCli();
 
         public static IAgentCli For(AgentCliKind kind) => kind switch
         {
             AgentCliKind.Claude => Claude,
             AgentCliKind.Codex => Codex,
+            AgentCliKind.Pi => Pi,
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "No adapter registered."),
         };
     }

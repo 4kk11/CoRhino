@@ -35,7 +35,7 @@ export function createSkillsDrawer(opts: {
   reloadSkills: (agentId: string) => void
   getActiveAgentId: () => string | null
   /** The active tab's CLI: drives ⟳ visibility (codex has no in-session reload). */
-  getActiveCli: () => 'claude' | 'codex' | null
+  getActiveCli: () => 'claude' | 'codex' | 'pi' | null
   /** Called after open/close so main.ts can refit and enforce exclusivity. */
   onToggled: (open: boolean) => void
 }): SkillsDrawer {
@@ -90,7 +90,7 @@ export function createSkillsDrawer(opts: {
   // so it disappears while a codex tab is active (the ⚠ hint says "new tabs"
   // instead, see buildRow).
   function syncReloadButton() {
-    reloadBtn.style.display = opts.getActiveCli() === 'codex' ? 'none' : ''
+    reloadBtn.style.display = (opts.getActiveCli() ?? 'claude') !== 'claude' ? 'none' : ''
   }
 
   function close() {
@@ -146,7 +146,7 @@ export function createSkillsDrawer(opts: {
     if (skill.needsReload) {
       const hint = document.createElement('div')
       hint.className = 'sd-stalehint'
-      hint.textContent = opts.getActiveCli() === 'codex' ? L.needsReloadNewTab : L.needsReload
+      hint.textContent = (opts.getActiveCli() ?? 'claude') !== 'claude' ? L.needsReloadNewTab : L.needsReload
       row.appendChild(hint)
     }
 

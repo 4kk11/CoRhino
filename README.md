@@ -41,6 +41,9 @@ Rhino process
   - If missing, the tab shows a setup view that runs the official installer with one click
 - (Optional) **[Codex CLI](https://developers.openai.com/codex/cli)** (`codex`) **0.142 or later** — enables codex tabs in the "+" menu; grayed out if absent, with no effect on claude tabs
   - Older versions fail to launch codex tabs (unknown hook flags) — fix with `codex update`
+- (Optional) **[pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)** (`pi`) — enables pi tabs (π) in the "+" menu. Tabs start on `google-vertex/gemini-4-carbon` (switch in-session with Ctrl+P / `/model`), so that model must be defined in your `~/.pi/agent/models.json`
+  - Isolation: each tab gets its own `PI_CODING_AGENT_DIR` under `~/.corhino/runtime/` that links your `models.json` / `auth.json` / `settings.json` and carries an `mcp.json` with only this panel's rhino server; your `~/.pi/agent` extensions and MCP servers are not loaded. Sessions are stored in `~/.corhino/pi/sessions/`
+  - Not yet: pi sessions are not listed in the 🕘 drawer, and the status glyph stays idle (pi has no lifecycle hooks)
 - **Rhino-MCP-Platform** (yak package) — if missing, the panel detects it and handles consent → install → restart guidance automatically
 
 ## Installation
@@ -169,7 +172,7 @@ The panel then loads the dev server URL instead of the on-disk `web/index.html`.
 ```
 src/            C# Rhino plugin
 ├── Panel/      panel orchestrator, drawers, orchestration protocol, workspace/settings persistence
-├── Cli/        CLI adapter layer (IAgentCli / ClaudeCli / CodexCli — args, isolation, ID discovery)
+├── Cli/        CLI adapter layer (IAgentCli / ClaudeCli / CodexCli / PiCli — args, isolation, ID discovery)
 ├── Pty/        PTY sessions (Porta.Pty) + CLI resolution
 └── Commands/   the "CoRhino" command (opens the panel)
 cc-plugin/      bundled Claude Code plugin (save-rhino-skill / orchestrate-agents)

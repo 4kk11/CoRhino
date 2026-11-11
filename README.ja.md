@@ -41,6 +41,9 @@ Rhino プロセス
   - 見つからない場合はタブ内にセットアップビューが出て、公式インストーラをボタン一つで実行できる
 - （任意）**[Codex CLI](https://developers.openai.com/codex/cli)**（`codex`）**0.142 以降** — あれば「＋」メニューから codex タブを起動できる。無ければグレーアウトされるだけで claude 側に影響はない
   - 古いバージョンでは codex タブの起動自体が失敗する（未知のフックフラグ）。`codex update` で解消
+- （任意）**[pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)**（`pi`）— あれば「＋」メニューから pi タブ（π）を起動できる。タブは `google-vertex/gemini-4-carbon` で起動する（セッション内で Ctrl+P / `/model` で切替可）ので、このモデルを `~/.pi/agent/models.json` に定義しておくこと
+  - 隔離: タブごとに `~/.corhino/runtime/` 配下の専用 `PI_CODING_AGENT_DIR` を使う。`models.json` / `auth.json` / `settings.json` はユーザーのものへリンクし、`mcp.json` はこのパネルの rhino サーバーだけを持つ。`~/.pi/agent` の拡張・MCP サーバーは読み込まれない。セッションは `~/.corhino/pi/sessions/` に保存
+  - 未対応: pi セッションは 🕘 ドロワーに出ない。ステータスグリフは常に待機表示（pi にライフサイクルフックが無いため）
 - **Rhino-MCP-Platform**（yak パッケージ）— 未導入ならパネルが検出し、同意ダイアログ → インストール → 再起動案内まで自動で行う
 
 ## インストール
@@ -169,7 +172,7 @@ export CORHINO_WEBUI_URL=http://localhost:5173
 ```
 src/            C# Rhino プラグイン
 ├── Panel/      パネル本体（オーケストレータ）、ドロワー、オーケストレーションプロトコル、設定永続化
-├── Cli/        CLI アダプタ層（IAgentCli / ClaudeCli / CodexCli — 起動引数・隔離・ID 発見）
+├── Cli/        CLI アダプタ層（IAgentCli / ClaudeCli / CodexCli / PiCli — 起動引数・隔離・ID 発見）
 ├── Pty/        PTY セッション（Porta.Pty）と CLI 解決
 └── Commands/   "CoRhino" コマンド（パネルを開く）
 cc-plugin/      同梱 Claude Code プラグイン（save-rhino-skill / orchestrate-agents）

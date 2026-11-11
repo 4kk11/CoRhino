@@ -98,6 +98,14 @@ namespace CoRhino.Cli
         IReadOnlyList<string> BuildArgs(SpawnContext ctx);
 
         /// <summary>
+        /// Extra environment variables for the spawn (merged over PATH etc.).
+        /// pi uses this to point PI_CODING_AGENT_DIR at its per-agent config
+        /// dir; claude and codex need none.
+        /// </summary>
+        IReadOnlyDictionary<string, string> BuildEnv(SpawnContext ctx) =>
+            new Dictionary<string, string>();
+
+        /// <summary>
         /// Resolve the session id after the process launched. Claude knows it
         /// up front (returns ctx.SessionId immediately); codex polls its rollout
         /// store and may return null if discovery fails (the tab stays usable,

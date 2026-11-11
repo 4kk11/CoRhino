@@ -29,7 +29,7 @@ export type SessionInfo = {
   customName: string | null
   startedAt: string // ISO-8601 UTC
   lastActivity: string // ISO-8601 UTC
-  cli: 'claude' | 'codex' // which CLI recorded it (row badge, matches tab badges)
+  cli: 'claude' | 'codex' | 'pi' // which CLI recorded it (row badge, matches tab badges)
   isLive: boolean // a live tab (any panel) runs this very session
   // The live tab's activity state; null/absent when the session is live in
   // another panel (this panel can't see that tab's state — fall back to the

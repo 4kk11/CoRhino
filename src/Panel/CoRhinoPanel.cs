@@ -293,7 +293,7 @@ namespace CoRhino.Panel
                 Starting = true,
                 // Claude pins its id up front (--session-id); codex generates its
                 // own — discovery fills SessionId in after launch.
-                SessionId = kind == AgentCliKind.Claude ? Guid.NewGuid().ToString() : null,
+                SessionId = kind != AgentCliKind.Codex ? Guid.NewGuid().ToString() : null,
                 ParentAgentId = parentAgentId,
                 RequestedPermissionMode = permissionMode,
             };
@@ -355,7 +355,12 @@ namespace CoRhino.Panel
         // The wire id of a CLI ("claude" / "codex") — the protocol's enum,
         // shared by onTabCreated / onCliAvailability / onSessionsList / createTab.
         static string CliId(AgentTab tab) => CliId(tab.Cli.Kind);
-        static string CliId(AgentCliKind kind) => kind == AgentCliKind.Codex ? "codex" : "claude";
+        static string CliId(AgentCliKind kind) => kind switch
+        {
+            AgentCliKind.Codex => "codex",
+            AgentCliKind.Pi => "pi",
+            _ => "claude",
+        };
 
         // Tab label priority: user-given name > the CLI's auto title (from the last
         // sessions scan) > the agent id.
@@ -756,6 +761,7 @@ namespace CoRhino.Panel
                 // A .cmd shim may have resolved to `node.exe <script.js>` —
                 // the script rides in front of the CLI's own args.
                 var args = prefixArgs.Concat(cli.BuildArgs(ctx)).ToArray();
+                foreach (var (k, v) in cli.BuildEnv(ctx)) env[k] = v;
 
                 var isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
                 if (string.IsNullOrEmpty(cliPath))
@@ -914,10 +920,11 @@ namespace CoRhino.Panel
             {
                 var claude = CliResolver.Resolve(AgentCliRegistry.Claude).cliPath != null;
                 var codex = CliResolver.Resolve(AgentCliRegistry.Codex).cliPath != null;
+                var pi = CliResolver.Resolve(AgentCliRegistry.Pi).cliPath != null;
                 Application.Instance?.AsyncInvoke(() =>
                 {
                     if (!_webReady) return;
-                    var encoded = JsonSerializer.Serialize(new { claude, codex }, JsonOptions);
+                    var encoded = JsonSerializer.Serialize(new { claude, codex, pi }, JsonOptions);
                     _ = _webView.ExecuteScriptAsync($"window.CoRhinoPanel?.onCliAvailability({encoded})");
                 });
             });
@@ -1024,9 +1031,12 @@ namespace CoRhino.Panel
                     case "createTab":
                         // Optional cli field ("claude" | "codex"); absent → claude.
                         SpawnTab(
-                            root.TryGetProperty("cli", out var cliEl) && cliEl.GetString() == "codex"
-                                ? AgentCliKind.Codex
-                                : AgentCliKind.Claude);
+                            (root.TryGetProperty("cli", out var cliEl) ? cliEl.GetString() : null) switch
+                            {
+                                "codex" => AgentCliKind.Codex,
+                                "pi" => AgentCliKind.Pi,
+                                _ => AgentCliKind.Claude,
+                            });
                         break;
 
                     case "closeTab":

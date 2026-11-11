@@ -8,7 +8,10 @@ import { L } from './i18n'
 
 // The CLI a tab runs — the wire enum shared with the host (createTab /
 // onTabCreated / onCliAvailability).
-type CliKind = 'claude' | 'codex'
+type CliKind = 'claude' | 'codex' | 'pi'
+const CLI_NAME: Record<CliKind, string> = { claude: 'Claude Code', codex: 'Codex', pi: 'pi' }
+const CLI_BADGE: Record<CliKind, string> = { claude: '●', codex: '◆', pi: 'π' }
+const asCli = (v: unknown): CliKind => (v === 'codex' || v === 'pi' ? v : 'claude')
 
 // The host created an agent (tab). sessionId is the session it runs (null for
 // a codex tab until the host discovers the id and pushes onTabSession);
@@ -28,7 +31,7 @@ type TabStatusPayload = { agentId: string; sessionId: string | null; status: Age
 type TabSessionPayload = { agentId: string; sessionId: string }
 // Which CLIs resolve on PATH (probed once per panel boot; missing ones grey
 // out in the + menu).
-type CliAvailabilityPayload = { claude: boolean; codex: boolean }
+type CliAvailabilityPayload = { claude: boolean; codex: boolean; pi: boolean }
 // A tab's CLI didn't resolve — drive the in-pane setup view. 'missing' shows
 // the full overlay, 'installing' clears it (installer output streams in the
 // xterm), 'failed' shows a bottom banner so that output stays readable.
@@ -199,6 +202,7 @@ function boot() {
   .clibadge { font-size: 10px; }
   .clibadge.claude { color: #d0846a; }
   .clibadge.codex { color: #6f9fdf; }
+  .clibadge.pi { color: #8fc97a; }
   .tab .clibadge { flex: 0 0 auto; }
   /* Agent status glyph (tab bar + sessions drawer). A round dot read as a
      second CLI badge (● claude), so each state gets its own glyph instead:
@@ -318,8 +322,9 @@ ${isWindowsWebView2 ? `
   const CLI_META: { id: CliKind; name: string; badge: string }[] = [
     { id: 'claude', name: 'Claude Code', badge: '●' },
     { id: 'codex', name: 'Codex', badge: '◆' },
+    { id: 'pi', name: 'pi', badge: 'π' },
   ]
-  let cliAvailability: CliAvailabilityPayload = { claude: true, codex: false }
+  let cliAvailability: CliAvailabilityPayload = { claude: true, codex: false, pi: false }
   let cliMenu: HTMLElement | null = null
 
   function closeCliMenu() {
@@ -531,7 +536,7 @@ ${isWindowsWebView2 ? `
 
   function addTab(payload: TabCreatedPayload) {
     const { agentId, sessionId, label, customName } = payload
-    const cli: CliKind = payload.cli === 'codex' ? 'codex' : 'claude'
+    const cli: CliKind = asCli(payload.cli)
     if (tabs.has(agentId)) {
       activateTab(agentId)
       return
@@ -610,8 +615,8 @@ ${isWindowsWebView2 ? `
     // CLI badge (matches the + menu): ● claude / ◆ codex.
     const badge = document.createElement('span')
     badge.className = `clibadge ${cli}`
-    badge.textContent = cli === 'codex' ? '◆' : '●'
-    badge.title = cli === 'codex' ? 'Codex' : 'Claude Code'
+    badge.textContent = CLI_BADGE[cli]
+    badge.title = CLI_NAME[cli]
     el.appendChild(badge)
     // Agent activity glyph (busy / waiting / unseen; hidden while idle),
     // driven by onTabStatus.
@@ -799,7 +804,7 @@ ${isWindowsWebView2 ? `
   function renderCliSetup(tab: Tab, payload: CliSetupPayload) {
     clearCliSetup(tab, false)
     const failed = payload.phase === 'failed'
-    const displayName = payload.cli === 'codex' ? 'Codex' : 'Claude Code'
+    const displayName = CLI_NAME[asCli(payload.cli)]
 
     const box = document.createElement('div')
     box.className = 'clisetup-box'
@@ -814,7 +819,7 @@ ${isWindowsWebView2 ? `
       title.className = 'clisetup-title'
       const badge = document.createElement('span')
       badge.className = `clibadge ${payload.cli}`
-      badge.textContent = payload.cli === 'codex' ? '◆' : '●'
+      badge.textContent = CLI_BADGE[asCli(payload.cli)]
       title.appendChild(badge)
       title.appendChild(document.createTextNode(L.cliMissingTitle(displayName)))
       box.appendChild(title)
