@@ -67,11 +67,76 @@ namespace CoRhino.Cli
         static readonly string[] SharedFiles =
             { "models.json", "models-store.json", "auth.json", "settings.json", "trust.json" };
 
-        public IReadOnlyDictionary<string, string> BuildEnv(SpawnContext ctx) =>
-            new Dictionary<string, string>
+        public IReadOnlyDictionary<string, string> BuildEnv(SpawnContext ctx)
+        {
+            var env = new Dictionary<string, string>(ReadProviderEnv())
             {
                 ["PI_CODING_AGENT_DIR"] = EnsureAgentDir(ctx.HostPort, ctx.AgentId),
             };
+            return env;
+        }
+
+        // Provider settings pi reads from the environment (Vertex ADC project /
+        // location, API keys). Users typically export them in ~/.zshrc, which
+        // a Dock-launched Rhino never sources (and CliResolver's bash -lc
+        // doesn't either) — so a pi tab would fail with "No API key found".
+        // Pull ONLY these names from the user's interactive login shell.
+        // Values go straight into the child env and are never logged.
+        static readonly string[] ProviderEnvNames =
+        {
+            "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION", "VERTEX_LOCATION",
+            "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_API_KEY", "CLOUDSDK_CONFIG",
+        };
+
+        static Dictionary<string, string> ReadProviderEnv()
+        {
+            var result = new Dictionary<string, string>();
+            foreach (var n in ProviderEnvNames)
+            {
+                var v = Environment.GetEnvironmentVariable(n);
+                if (!string.IsNullOrEmpty(v)) result[n] = v!;
+            }
+            if (OperatingSystem.IsWindows() || result.Count == ProviderEnvNames.Length) return result;
+
+            try
+            {
+                var shell = Environment.GetEnvironmentVariable("SHELL");
+                if (string.IsNullOrEmpty(shell) || !File.Exists(shell)) shell = "/bin/zsh";
+                var psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = shell,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    RedirectStandardInput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                foreach (var a in new[] { "-ilc", "env -0" }) psi.ArgumentList.Add(a);
+                using var proc = System.Diagnostics.Process.Start(psi);
+                if (proc == null) return result;
+                proc.StandardInput.Close();
+                var readTask = proc.StandardOutput.ReadToEndAsync();
+                if (!readTask.Wait(5000)) { try { proc.Kill(true); } catch { } return result; }
+                foreach (var entry in readTask.Result.Split('\0'))
+                {
+                    var eq = entry.IndexOf('=');
+                    if (eq <= 0) continue;
+                    // -i may prefix stdout with rc noise; the name is the tail after the last newline.
+                    var name = entry.Substring(0, eq);
+                    var nl = name.LastIndexOf('\n');
+                    if (nl >= 0) name = name.Substring(nl + 1);
+                    if (Array.IndexOf(ProviderEnvNames, name) < 0 || result.ContainsKey(name)) continue;
+                    var value = entry.Substring(eq + 1);
+                    if (value.Length > 0) result[name] = value;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Write($"[CoRhino] pi: could not read provider env from login shell: {ex.GetType().Name}");
+            }
+            Log.Write($"[CoRhino] pi: provider env forwarded: {string.Join(", ", result.Keys)}");
+            return result;
+        }
 
         public IReadOnlyList<string> BuildArgs(SpawnContext ctx)
         {

@@ -42,7 +42,7 @@ Rhino プロセス
 - （任意）**[Codex CLI](https://developers.openai.com/codex/cli)**（`codex`）**0.142 以降** — あれば「＋」メニューから codex タブを起動できる。無ければグレーアウトされるだけで claude 側に影響はない
   - 古いバージョンでは codex タブの起動自体が失敗する（未知のフックフラグ）。`codex update` で解消
 - （任意）**[pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)**（`pi`）— あれば「＋」メニューから pi タブ（π）を起動できる。タブは `google-vertex/gemini-4-carbon` で起動する（セッション内で Ctrl+P / `/model` で切替可）ので、このモデルを `~/.pi/agent/models.json` に定義しておくこと
-  - 隔離: タブごとに `~/.corhino/runtime/` 配下の専用 `PI_CODING_AGENT_DIR` を使う。`models.json` / `auth.json` / `settings.json` はユーザーのものへリンクし、`mcp.json` はこのパネルの rhino サーバーだけを持つ。`~/.pi/agent` の拡張・MCP サーバーは読み込まれない。セッションは `~/.corhino/pi/sessions/` に保存
+  - 隔離: タブごとに `~/.corhino/runtime/` 配下の専用 `PI_CODING_AGENT_DIR` を使う。`models.json` / `auth.json` / `settings.json` はユーザーのものへリンクし、`mcp.json` はこのパネルの rhino サーバーだけを持つ。`~/.pi/agent` の拡張・MCP サーバーは読み込まれない。セッションは `~/.corhino/pi/sessions/` に保存。プロバイダ用の環境変数（`GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` / `VERTEX_LOCATION` / `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_CLOUD_API_KEY` / `CLOUDSDK_CONFIG`）は対話ログインシェル（`~/.zshrc` など）から読み取って pi タブに渡す
   - 未対応: pi セッションは 🕘 ドロワーに出ない。ステータスグリフは常に待機表示（pi にライフサイクルフックが無いため）
 - **Rhino-MCP-Platform**（yak パッケージ）— 未導入ならパネルが検出し、同意ダイアログ → インストール → 再起動案内まで自動で行う
 
